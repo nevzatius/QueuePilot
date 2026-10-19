@@ -1,12 +1,13 @@
 import type { TaskPayload } from '@queuepilot/contracts';
+import type { TaskProbe } from '@queuepilot/domain';
 
 /** B4 supplies CloudTasks/LocalDispatchQueue. Only the committed acceptance creator calls seq=1. */
 export interface QueuePort {
   enqueue(payload: TaskPayload, signal: AbortSignal): Promise<void>;
 }
-export const deferredQueue: QueuePort = {
-  enqueue: async () => { throw new Error('B4 queue adapter is not connected'); },
-};
+export interface DispatchQueue extends QueuePort {
+  probe(requestId: string, seq: number): Promise<TaskProbe>;
+}
 
 /** Bound API latency even when an adapter ignores cancellation. The name remains unique on late completion. */
 export async function enqueueAccepted(queue: QueuePort, payload: TaskPayload, timeoutMs = 2000): Promise<void> {

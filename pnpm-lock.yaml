@@ -53,6 +53,9 @@ importers:
       firebase-admin:
         specifier: 14.5.0
         version: 14.5.0(@firebase/app-compat@0.5.19)(@firebase/app@0.16.3)
+      google-auth-library:
+        specifier: 11.3.1
+        version: 11.3.1
       pino:
         specifier: 10.4.0
         version: 10.4.0
@@ -114,9 +117,33 @@ importers:
 
   apps/worker:
     dependencies:
+      '@queuepilot/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@queuepilot/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@queuepilot/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      fastify:
+        specifier: 5.12.7
+        version: 5.12.7
+      fastify-type-provider-zod:
+        specifier: 7.0.0
+        version: 7.0.0(@fastify/swagger@9.9.2)(fastify@5.12.7)(openapi-types@12.1.3)(zod@4.6.7)
+      firebase-admin:
+        specifier: 14.5.0
+        version: 14.5.0(@firebase/app-compat@0.5.19)(@firebase/app@0.16.3)
+      google-auth-library:
+        specifier: 11.3.1
+        version: 11.3.1
+      pino:
+        specifier: 10.4.0
+        version: 10.4.0
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/contracts:
     dependencies:
@@ -135,6 +162,9 @@ importers:
       firebase-admin:
         specifier: 14.5.0
         version: 14.5.0(@firebase/app-compat@0.5.19)(@firebase/app@0.16.3)
+      google-auth-library:
+        specifier: 11.3.1
+        version: 11.3.1
       pino:
         specifier: 10.4.0
         version: 10.4.0

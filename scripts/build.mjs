@@ -11,6 +11,7 @@ for (const app of ['api', 'worker']) {
     target: 'node24',
     format: 'esm',
     sourcemap: true,
+    external: ['firebase-admin/*', 'fastify', 'fastify-type-provider-zod', 'pino', 'zod', 'google-auth-library'],
     logLevel: 'info',
   });
 }
