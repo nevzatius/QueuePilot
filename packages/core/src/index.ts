@@ -1,2 +1,10 @@
 // IO adapters are added by B3-B5; the foundation deliberately has no application logic.
-export {};
+export * from './admission.js';
+export * from './auth.js';
+export * from './config.js';
+export * from './errors.js';
+export * from './log.js';
+export * from './membership.js';
+export * from './metrics.js';
+export * from './queue.js';
+export * from './requests.js';

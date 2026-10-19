@@ -3,5 +3,14 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts" }
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@queuepilot/contracts": "workspace:*",
+    "@queuepilot/domain": "workspace:*",
+    "firebase-admin": "14.5.0",
+    "pino": "10.4.0",
+    "zod": "^4.6.7"
+  }
 }

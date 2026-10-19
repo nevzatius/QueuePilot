@@ -3,5 +3,18 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "dependencies": { "@queuepilot/core": "workspace:*" }
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node dist/server.js",
+    "test:integration": "node test/integration/run.mjs"
+  },
+  "dependencies": {
+    "@queuepilot/contracts": "workspace:*",
+    "@queuepilot/core": "workspace:*",
+    "fastify": "5.12.7",
+    "fastify-type-provider-zod": "7.0.0",
+    "firebase-admin": "14.5.0",
+    "pino": "10.4.0",
+    "zod": "^4.6.7"
+  }
 }
