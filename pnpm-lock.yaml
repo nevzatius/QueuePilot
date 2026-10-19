@@ -11,6 +11,9 @@ importers:
       '@eslint/js':
         specifier: 10.0.1
         version: 10.0.1(eslint@10.13.0(jiti@2.7.0))
+      '@queuepilot/contracts':
+        specifier: workspace:*
+        version: link:packages/contracts
       '@queuepilot/core':
         specifier: workspace:*
         version: link:packages/core
