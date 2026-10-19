@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { CreateRequestBodySchema, CreateRequestResponseSchema } from '../src/index.js';
 
-const valid = { type: 'maintenance', title: 'Leaking pipe' } as const;
+const valid = { type: 'roadside_assistance', title: 'Leaking pipe' } as const;
 
 describe('CreateRequestBodySchema', () => {
   it('applies defaults for optional fields', () => {
     expect(CreateRequestBodySchema.parse(valid)).toEqual({
-      type: 'maintenance',
+      type: 'roadside_assistance',
       title: 'Leaking pipe',
       description: '',
       priority: 'normal',
@@ -26,21 +26,30 @@ describe('CreateRequestBodySchema', () => {
   });
 
   it('accepts all triage attributes', () => {
-    const attributes = { safetyRisk: 'high', locationType: 'outdoor', preferredWindow: 'morning' };
+    const attributes = { safetyRisk: true, locationType: 'highway', preferredWindow: 'morning' };
     expect(CreateRequestBodySchema.parse({ ...valid, attributes }).attributes).toEqual(attributes);
   });
 
   const invalid: Array<[string, unknown]> = [
     ['missing type', { title: 'Leaking pipe' }],
     ['unknown type', { ...valid, type: 'plumbing' }],
-    ['missing title', { type: 'maintenance' }],
+    ['missing title', { type: 'roadside_assistance' }],
     ['title too short (2)', { ...valid, title: 'ab' }],
     ['title blank after trim', { ...valid, title: '     ' }],
     ['title too long (121)', { ...valid, title: 'x'.repeat(121) }],
     ['description too long (2001)', { ...valid, description: 'x'.repeat(2001) }],
     ['unknown priority', { ...valid, priority: 'critical' }],
-    ['unknown attribute value', { ...valid, attributes: { safetyRisk: 'extreme' } }],
-    ['unknown attribute key', { ...valid, attributes: { color: 'red' } }],
+    ['unknown type', { ...valid, type: 'maintenance' }],
+    ['safetyRisk as string', { ...valid, attributes: { safetyRisk: 'high' } }],
+    ['unknown locationType', { ...valid, attributes: { locationType: 'indoor' } }],
+    ['nested object attribute', { ...valid, attributes: { vehicle: { make: 'x' } } }],
+    ['array attribute', { ...valid, attributes: { tags: ['a'] } }],
+    ['null attribute', { ...valid, attributes: { note: null } }],
+    ['over-long string attribute', { ...valid, attributes: { note: 'x'.repeat(201) } }],
+    ['non-finite number attribute', { ...valid, attributes: { n: Infinity } }],
+    ['invalid attribute key', { ...valid, attributes: { 'bad key': 1 } }],
+    ['attribute key too long', { ...valid, attributes: { ['k'.repeat(33)]: 1 } }],
+    ['too many attributes (21)', { ...valid, attributes: Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`k${i}`, i])) }],
     ['client-supplied tenantId', { ...valid, tenantId: 'sandbox' }],
     ['client-supplied createdBy', { ...valid, createdBy: 'uid-1' }],
     ['client-supplied status', { ...valid, status: 'COMPLETED' }],
@@ -56,6 +65,13 @@ describe('CreateRequestBodySchema', () => {
     expect(CreateRequestBodySchema.safeParse({ ...valid, title: 'abc' }).success).toBe(true);
     expect(CreateRequestBodySchema.safeParse({ ...valid, title: 'x'.repeat(120) }).success).toBe(true);
     expect(CreateRequestBodySchema.safeParse({ ...valid, description: 'x'.repeat(2000) }).success).toBe(true);
+  });
+
+  it('accepts bounded extra primitive attributes up to the limit', () => {
+    const extra = { vehiclePlate: 'AB123', passengers: 3, towRequired: false, note: 'x'.repeat(200) };
+    expect(CreateRequestBodySchema.parse({ ...valid, attributes: extra }).attributes).toEqual(extra);
+    const twenty = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`k${i}`, i]));
+    expect(CreateRequestBodySchema.safeParse({ ...valid, attributes: twenty }).success).toBe(true);
   });
 
   it('reports the failing path', () => {

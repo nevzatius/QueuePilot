@@ -14,19 +14,47 @@ import type { FailureReason, RequestStatus } from './status.js';
 // Create
 // ---------------------------------------------------------------------------
 
-export const REQUEST_TYPES = ['maintenance', 'it_support', 'facilities', 'other'] as const;
+export const REQUEST_TYPES = [
+  'roadside_assistance',
+  'technical_service',
+  'appointment',
+  'support_ticket',
+  'booking',
+  'general',
+] as const;
 export const RequestTypeSchema = z.enum(REQUEST_TYPES);
 export type RequestType = z.infer<typeof RequestTypeSchema>;
 
 export const PrioritySchema = z.enum(['low', 'normal', 'high', 'urgent']);
 export type Priority = z.infer<typeof PrioritySchema>;
 
-/** Triage inputs besides `priority` (ARCHITECTURE §17). Strict, so the stored attributes stay bounded. */
-export const RequestAttributesSchema = z.strictObject({
-  safetyRisk: z.enum(['none', 'low', 'high']).optional(),
-  locationType: z.enum(['indoor', 'outdoor', 'remote']).optional(),
-  preferredWindow: z.enum(['morning', 'afternoon', 'evening', 'anytime']).optional(),
-});
+export const MAX_ATTRIBUTES = 20;
+export const MAX_ATTRIBUTE_VALUE_LENGTH = 200;
+const ATTRIBUTE_KEY = /^[A-Za-z][A-Za-z0-9_]{0,31}$/;
+
+/**
+ * Triage inputs besides `priority` (ARCHITECTURE §17) plus sector-specific extras. The three known
+ * keys are typed; any other key must be a bounded primitive (string, number or boolean). Nested
+ * objects, arrays and null are rejected. At most 20 keys in total.
+ */
+export const RequestAttributesSchema = z
+  .object({
+    safetyRisk: z.boolean().optional(),
+    locationType: z.enum(['highway', 'urban', 'rural']).optional(),
+    preferredWindow: z.enum(['morning', 'afternoon', 'evening', 'anytime']).optional(),
+  })
+  .catchall(z.union([z.string().max(MAX_ATTRIBUTE_VALUE_LENGTH), z.number(), z.boolean()]))
+  .superRefine((attrs, ctx) => {
+    const keys = Object.keys(attrs);
+    if (keys.length > MAX_ATTRIBUTES) {
+      ctx.addIssue({ code: 'custom', message: `at most ${MAX_ATTRIBUTES} attributes` });
+    }
+    for (const key of keys) {
+      if (!ATTRIBUTE_KEY.test(key)) {
+        ctx.addIssue({ code: 'custom', path: [key], message: 'invalid attribute key' });
+      }
+    }
+  });
 export type RequestAttributes = z.infer<typeof RequestAttributesSchema>;
 
 /**
@@ -58,7 +86,7 @@ export type CreateRequestResponse = z.infer<typeof CreateRequestResponseSchema>;
 /** Deterministic triage output (ARCHITECTURE §17, I6). */
 export const TriageResultSchema = z.object({
   rulesVersion: z.string().min(1).max(32),
-  lane: z.enum(['URGENT', 'STANDARD', 'SCHEDULED']),
+  lane: z.enum(['emergency', 'standard', 'scheduled']),
   slaTargetMinutes: z.number().int().positive().max(525_600),
   team: z.string().min(1).max(64),
   score: z.number().int().min(0).max(100),

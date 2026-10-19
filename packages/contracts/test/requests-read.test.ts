@@ -11,11 +11,11 @@ import {
 const requestId = '3f2b8c1e-6a4d-4f0b-9c1d-2e7a5b8c9d01';
 const t0 = '2026-10-20T09:00:00.000Z';
 const t1 = '2026-10-20T09:00:05.250Z';
-const result = { rulesVersion: 'v1', lane: 'URGENT', slaTargetMinutes: 60, team: 'facilities-a', score: 87 } as const;
+const result = { rulesVersion: 'v1', lane: 'emergency', slaTargetMinutes: 60, team: 'facilities-a', score: 87 } as const;
 
 const accepted = {
   requestId,
-  type: 'maintenance',
+  type: 'roadside_assistance',
   title: 'Leaking pipe',
   priority: 'high',
   status: 'ACCEPTED',
@@ -49,7 +49,7 @@ describe('RequestSummarySchema', () => {
     ['timestamp with offset', { ...accepted, createdAt: '2026-10-20T09:00:00+02:00' }],
     ['non-v4 requestId', { ...accepted, requestId: 'not-a-uuid' }],
     ['score out of range', { ...completed, result: { ...result, score: 101 } }],
-    ['unknown lane', { ...completed, result: { ...result, lane: 'FAST' } }],
+    ['unknown lane', { ...completed, result: { ...result, lane: 'URGENT' } }],
     ['missing createdAt', { ...accepted, createdAt: undefined }],
   ];
   it.each(invalid)('rejects %s', (_name, body) => {
@@ -63,7 +63,7 @@ describe('RequestDetailSchema', () => {
     tenantId: 'sandbox',
     createdBy: 'uid-1',
     description: 'Water under the sink',
-    attributes: { safetyRisk: 'low' },
+    attributes: { safetyRisk: true, locationType: 'urban' },
     source: 'ui',
     correlationId: 'corr-1234',
     startedAt: t0,
@@ -90,7 +90,7 @@ describe('RequestDetailSchema', () => {
     ['event seq below 1', { ...detail, events: [{ type: 'ACCEPTED', at: t0, actor: 'api', attempt: 0, seq: 0 }] }],
     ['nested event details', { ...detail, events: [{ type: 'ACCEPTED', at: t0, actor: 'api', attempt: 0, seq: 1, details: { a: { b: 1 } } }] }],
     ['unknown source', { ...detail, source: 'cli' }],
-    ['unknown attribute', { ...detail, attributes: { color: 'red' } }],
+    ['nested attribute', { ...detail, attributes: { color: { r: 1 } } }],
     ['invalid tenant slug', { ...detail, tenantId: 'Sand Box' }],
     ['too many events', { ...detail, events: Array.from({ length: 201 }, () => detail.events[0]) }],
   ];
