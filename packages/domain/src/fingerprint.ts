@@ -4,7 +4,7 @@ import type { CreateRequestBody } from '@queuepilot/contracts';
 /**
  * Canonical JSON: object keys sorted by UTF-16 code unit order, no whitespace, `undefined` object
  * members omitted. Only JSON data is accepted; anything else (NaN, Infinity, bigint, functions, class
- * instances, `undefined` array items) throws, because it has no stable encoding.
+ * instances, `undefined` array items, sparse arrays) throws, because it has no stable encoding.
  */
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value);
@@ -13,12 +13,15 @@ export function canonicalJson(value: unknown): string {
     return JSON.stringify(value); // -0 serialises as 0
   }
   if (Array.isArray(value)) {
-    return `[${value
-      .map((item: unknown) => {
-        if (item === undefined) throw new TypeError('canonicalJson: undefined array item');
-        return canonicalJson(item);
-      })
-      .join(',')}]`;
+    // An index loop, not `map`: `map` skips holes, so `Array(1)` would encode as `[]`.
+    const items: string[] = [];
+    for (let i = 0; i < value.length; i++) {
+      if (!Object.hasOwn(value, i)) throw new TypeError('canonicalJson: sparse array');
+      const item: unknown = value[i];
+      if (item === undefined) throw new TypeError('canonicalJson: undefined array item');
+      items.push(canonicalJson(item));
+    }
+    return `[${items.join(',')}]`;
   }
   if (typeof value === 'object' && isPlainObject(value)) {
     const members = Object.keys(value)

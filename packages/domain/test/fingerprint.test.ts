@@ -25,6 +25,15 @@ describe('canonicalJson', () => {
       expect(() => canonicalJson(bad)).toThrow(TypeError);
     }
   });
+
+  it('rejects sparse arrays, so [] and Array(1) never share an encoding', () => {
+    expect(canonicalJson([])).toBe('[]');
+    // eslint-disable-next-line no-sparse-arrays
+    const sparse: unknown[] = [Array(1), Array(3), [1, , 2], { a: [, 1] }, [[], Array(1)]];
+    for (const bad of sparse) expect(() => canonicalJson(bad)).toThrow('canonicalJson: sparse array');
+    // An explicitly filled array is dense and encodes normally.
+    expect(canonicalJson(Array.from({ length: 2 }, () => null))).toBe('[null,null]');
+  });
 });
 
 describe('payloadFingerprint (ARCHITECTURE §9)', () => {

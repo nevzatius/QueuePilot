@@ -62,13 +62,19 @@ export type AdminRetryDecision =
   | { readonly kind: 'NOT_FOUND'; readonly write: null }
   /** Only FAILED requests can be retried; COMPLETED stays absorbing. */
   | { readonly kind: 'NOT_RETRYABLE'; readonly write: null }
-  /** Commit `write`, then `createTask` for `enqueue.seq` and follow up with `decideEnqueueResult`. */
+  /**
+   * Commit `write`, then `createTask` for `enqueue.seq` and continue with step 3 of the reconciler flow
+   * (`decideEnqueueResult`, then `decideVerifyResult` on ALREADY_EXISTS).
+   */
   | { readonly kind: 'RETRY'; readonly enqueue: EnqueueOrder; readonly write: StateWrite };
 
 /**
- * S12: FAILED → ACCEPTED with a fresh retry budget. `role` must come from an **uncached** membership
- * read (ADR-010). Counters stay monotonic: the budget is raised instead of resetting `attempts`, so
- * deterministic event IDs never collide and I5 holds per budget.
+ * S12 (P1, **not an MVP feature**): FAILED → ACCEPTED with a fresh retry budget epoch. No MVP route or
+ * adapter calls this; wiring it needs owner approval of P1 and an ADR for its I3 and I7 exceptions (see
+ * "Budgets and counters" in `state.ts`). `role` must come from an **uncached** membership read
+ * (ADR-010). Counters stay monotonic: the ceilings are raised instead of resetting `attempts` or `seq`,
+ * so deterministic event IDs never collide and I5 holds per epoch. `startedAt`, `deliveredSeq` and both
+ * `lastError` fields are kept as history.
  */
 export function decideAdminRetry(state: RequestState | null, role: Role, now: EpochMs): AdminRetryDecision {
   if (role !== 'admin') return { kind: 'FORBIDDEN', write: null };

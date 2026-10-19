@@ -7,6 +7,7 @@ import {
   SHORT_RECHECK_MS,
   decideEnqueueResult,
   decideReconcile,
+  decideVerifyResult,
   probeBackoffMs,
   type EnqueueDecision,
   type EnqueueOrder,
@@ -14,6 +15,7 @@ import {
   type ReconcileDecision,
   type RequestState,
   type TaskProbe,
+  type VerifyDecision,
 } from '../src/index.js';
 import { MIN, T0, accepted, apply, completed, deepFreeze, failed, processing } from './fixtures.js';
 
@@ -156,10 +158,10 @@ describe('decideEnqueueResult', () => {
     ['CREATED', claimed(), recreate, created, 'SCHEDULED', 'WATCHDOG'],
     ['FAILED', claimed(), recreate, error, 'BACKOFF', 'WATCHDOG'],
     ['FAILED after redispatch keeps the new seq', claimed({ dispatch: { seq: 2, deliveredSeq: 1 } }), redispatch, error, 'BACKOFF', 'WATCHDOG'],
-    ['ALREADY_EXISTS on a fresh generation', claimed({ dispatch: { seq: 2, deliveredSeq: 1 } }), redispatch, exists, 'SCHEDULED', 'WATCHDOG'],
-    ['ALREADY_EXISTS on recreate = tombstone (S9)', claimed(), recreate, exists, 'REDISPATCH', 'S9'],
-    ['tombstone at seq = MAX (S10)', claimed({ dispatch: { seq: MAX_DISPATCH, deliveredSeq: 1 } }), { ...recreate, seq: MAX_DISPATCH }, exists, 'FAIL', 'S10'],
-    ['tombstone with attempts = MAX (S8)', claimed({ processing: { attempts: MAX_ATTEMPTS } }), recreate, exists, 'FAIL', 'S8'],
+    ['ALREADY_EXISTS on a fresh generation is verified', claimed({ dispatch: { seq: 2, deliveredSeq: 1 } }), redispatch, exists, 'VERIFY_TASK', null],
+    ['ALREADY_EXISTS on recreate is verified, never a tombstone by itself', claimed(), recreate, exists, 'VERIFY_TASK', null],
+    ['ALREADY_EXISTS at seq = MAX is verified, not S10', claimed({ dispatch: { seq: MAX_DISPATCH, deliveredSeq: 1 } }), { ...recreate, seq: MAX_DISPATCH }, exists, 'VERIFY_TASK', null],
+    ['ALREADY_EXISTS with attempts = MAX is verified, not S8', claimed({ processing: { attempts: MAX_ATTEMPTS } }), recreate, exists, 'VERIFY_TASK', null],
   ];
 
   it.each(rows)('%s → %s', (_name, state, order, outcome, kind, transition) => {
@@ -183,14 +185,104 @@ describe('decideEnqueueResult', () => {
     });
   });
 
-  it('a tombstone redispatch is labelled and its own ALREADY_EXISTS never increments seq again', () => {
+  it('ALREADY_EXISTS never writes and asks for a probe of the same seq', () => {
+    expect(decideEnqueueResult(claimed(), recreate, exists, now)).toEqual({ kind: 'VERIFY_TASK', seq: 1, write: null });
+  });
+});
+
+describe('decideVerifyResult: the probe after ALREADY_EXISTS', () => {
+  const claim = T0 + SHORT_RECHECK_MS;
+  const now = T0 + 3_000;
+  const recreate = (seq = 1): EnqueueOrder => ({ seq, purpose: 'RECREATE', claim });
+  const redispatch = (seq = 2): EnqueueOrder => ({ seq, purpose: 'REDISPATCH', claim });
+  const claimed = (o: Parameters<typeof accepted>[0] = {}) => accepted({ watchdogAt: claim, ...o });
+  const atMax = { dispatch: { seq: MAX_DISPATCH, deliveredSeq: MAX_DISPATCH - 1 } };
+  const fresh = { dispatch: { seq: 2, deliveredSeq: 1 } };
+
+  const rows: Array<[string, RequestState | null, EnqueueOrder, TaskProbe, VerifyDecision['kind'], string | null]> = [
+    ['no document', null, recreate(), probe('NOT_FOUND'), 'NOOP', null],
+    ['completed meanwhile', completed({ watchdogAt: null }), recreate(), probe('NOT_FOUND'), 'NOOP', null],
+    ['seq moved on', claimed(fresh), recreate(1), probe('NOT_FOUND', 1), 'NOOP', null],
+    ['probe of another seq', claimed(), recreate(1), probe('NOT_FOUND', 2), 'NOOP', null],
+    ['claim lost (newer claimant)', accepted({ watchdogAt: claim + MIN }), recreate(), probe('NOT_FOUND'), 'NOOP', null],
+    ['lease acquired meanwhile', processing({ watchdogAt: claim }), recreate(), probe('NOT_FOUND'), 'NOOP', null],
+    ['EXISTS, seq = 1', claimed(), recreate(), probe('EXISTS'), 'WAIT_FOR_TASK', 'WATCHDOG'],
+    ['EXISTS, seq = MAX', claimed(atMax), recreate(MAX_DISPATCH), probe('EXISTS', MAX_DISPATCH), 'WAIT_FOR_TASK', 'WATCHDOG'],
+    ['EXISTS, fresh generation', claimed(fresh), redispatch(), probe('EXISTS', 2), 'WAIT_FOR_TASK', 'WATCHDOG'],
+    ['UNKNOWN, seq = 1', claimed(), recreate(), probe('UNKNOWN'), 'PROBE_UNKNOWN', 'WATCHDOG'],
+    ['UNKNOWN, seq = MAX', claimed(atMax), recreate(MAX_DISPATCH), probe('UNKNOWN', MAX_DISPATCH), 'PROBE_UNKNOWN', 'WATCHDOG'],
+    ['NOT_FOUND on recreate = tombstone (S9)', claimed(), recreate(), probe('NOT_FOUND'), 'REDISPATCH', 'S9'],
+    ['tombstone at seq = MAX (S10)', claimed(atMax), recreate(MAX_DISPATCH), probe('NOT_FOUND', MAX_DISPATCH), 'FAIL', 'S10'],
+    ['tombstone with attempts = MAX (S8)', claimed({ processing: { attempts: MAX_ATTEMPTS } }), recreate(), probe('NOT_FOUND'), 'FAIL', 'S8'],
+    ['NOT_FOUND on a fresh generation is only rechecked', claimed(fresh), redispatch(), probe('NOT_FOUND', 2), 'RECHECK', 'WATCHDOG'],
+    ['NOT_FOUND on a fresh generation at seq = MAX', claimed(atMax), redispatch(MAX_DISPATCH), probe('NOT_FOUND', MAX_DISPATCH), 'RECHECK', 'WATCHDOG'],
+  ];
+
+  it.each(rows)('%s → %s', (_name, state, order, p, kind, transition) => {
+    const d = decideVerifyResult(state === null ? null : deepFreeze(state), order, p, now);
+    expect(d.kind).toBe(kind);
+    expect(d.write?.transition ?? null).toBe(transition);
+    if (state !== null && d.write !== null) apply(state, d.write);
+  });
+
+  it('EXISTS backs off like step 4 and leaves seq and status alone', () => {
+    const before = claimed({ dispatch: { checks: 1 } });
+    const d = decideVerifyResult(before, recreate(), probe('EXISTS'), now);
+    expect(d.write?.next).toEqual({ ...before, dispatch: { ...before.dispatch, checks: 2 }, watchdogAt: now + 4 * MIN });
+    expect(d.write?.events).toEqual([]);
+  });
+
+  it.each([
+    ['UNKNOWN on a recreate', 'UNKNOWN', recreate()],
+    ['NOT_FOUND on a fresh generation', 'NOT_FOUND', redispatch(1)],
+  ] as const)('%s changes only the watchdog (+1 min)', (_name, result, order) => {
+      const before = claimed();
+      const d = decideVerifyResult(deepFreeze(before), order, probe(result), now);
+      expect(d.write?.next).toEqual({ ...before, watchdogAt: now + SHORT_RECHECK_MS });
+      expect(d.write?.events).toEqual([]);
+  });
+
+  it('a verified tombstone redispatches once; the new order cannot increment seq again', () => {
     const before = claimed();
-    const d = decideEnqueueResult(before, recreate, exists, now);
+    const d = decideVerifyResult(before, recreate(), probe('NOT_FOUND'), now);
     if (d.kind !== 'REDISPATCH') throw new Error(d.kind);
+    expect(d.enqueue).toEqual({ seq: 2, purpose: 'REDISPATCH', claim: now + SHORT_RECHECK_MS });
     expect(d.write.events.map((e) => [e.id, e.details])).toEqual([['REDISPATCHED-s2', { reason: 'TOMBSTONE' }]]);
     const after = apply(before, d.write);
-    const again = decideEnqueueResult(after, d.enqueue, exists, now + 1);
-    expect(again.kind).toBe('SCHEDULED');
+    expect(decideEnqueueResult(after, d.enqueue, { result: 'ALREADY_EXISTS' }, now + 1).kind).toBe('VERIFY_TASK');
+    const again = decideVerifyResult(after, d.enqueue, probe('NOT_FOUND', 2), now + 2);
+    expect(again.kind).toBe('RECHECK');
     expect(again.write?.next.dispatch.seq).toBe(2);
+  });
+
+  it('dispatch budget is consumed only by a NOT_FOUND after ALREADY_EXISTS on a RECREATE order', () => {
+    const states = [claimed(), claimed(fresh), claimed(atMax), claimed({ processing: { attempts: 3 } })];
+    for (const state of states) {
+      for (const purpose of ['RECREATE', 'REDISPATCH'] as const) {
+        for (const result of ['EXISTS', 'NOT_FOUND', 'UNKNOWN'] as const) {
+          const order: EnqueueOrder = { seq: state.dispatch.seq, purpose, claim };
+          const d = decideVerifyResult(state, order, probe(result, order.seq), now);
+          const consumed = d.write !== null && (d.write.next.dispatch.seq !== state.dispatch.seq || d.write.next.status === 'FAILED');
+          expect(consumed, `${purpose} ${result} at seq ${state.dispatch.seq}`).toBe(purpose === 'RECREATE' && result === 'NOT_FOUND');
+        }
+      }
+    }
+  });
+
+  it('decideEnqueueResult never changes seq or status, whatever createTask answers', () => {
+    const outcomes: EnqueueOutcome[] = [
+      { result: 'CREATED' },
+      { result: 'ALREADY_EXISTS' },
+      { result: 'FAILED', error: { code: 'DEADLINE_EXCEEDED', message: 'timeout' } },
+    ];
+    for (const state of [claimed(), claimed(fresh), claimed(atMax)]) {
+      for (const purpose of ['RECREATE', 'REDISPATCH'] as const) {
+        for (const outcome of outcomes) {
+          const d = decideEnqueueResult(state, { seq: state.dispatch.seq, purpose, claim }, outcome, now);
+          expect(d.write?.next.dispatch.seq ?? state.dispatch.seq).toBe(state.dispatch.seq);
+          expect(d.write?.next.status ?? state.status).toBe(state.status);
+        }
+      }
+    }
   });
 });

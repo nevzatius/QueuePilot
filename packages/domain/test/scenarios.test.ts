@@ -2,15 +2,19 @@ import { describe, expect, it } from 'vitest';
 import {
   LEASE_MS,
   MAX_ATTEMPTS,
+  MAX_DISPATCH,
+  decideAdminRetry,
   decideCompletion,
   decideDelivery,
   decideEnqueueResult,
   decideReconcile,
+  decideVerifyResult,
   isStuck,
   planAcceptance,
   type EnqueueOrder,
   type EnqueueOutcome,
   type ProcessingOutcome,
+  type DomainEvent,
   type ProbeResult,
   type RequestState,
   type StateWrite,
@@ -24,16 +28,22 @@ import { MIN, T0, apply } from './fixtures.js';
  */
 class Sim {
   state: RequestState;
+  /** Every committed timeline event, in commit order. */
+  readonly events: DomainEvent[] = [];
   private leases = 0;
   constructor(public now = T0) {
-    this.state = apply(null, planAcceptance({ requestId: 'req', payloadFingerprint: 'fp', now }).write);
+    const accepted = planAcceptance({ requestId: 'req', payloadFingerprint: 'fp', now }).write;
+    this.state = apply(null, accepted);
+    this.events.push(...accepted.events);
   }
   at(t: number): this {
     this.now = t;
     return this;
   }
   private commit(write: StateWrite | null): void {
-    if (write !== null) this.state = apply(this.state, write);
+    if (write === null) return;
+    this.state = apply(this.state, write);
+    this.events.push(...write.events);
   }
   deliver(seq = this.state.dispatch.seq) {
     const d = decideDelivery(this.state, { seq, leaseId: `L${++this.leases}` }, this.now);
@@ -54,6 +64,18 @@ class Sim {
   }
   enqueued(order: EnqueueOrder, outcome: EnqueueOutcome) {
     const d = decideEnqueueResult(this.state, order, outcome, this.now);
+    this.commit(d.write);
+    return d;
+  }
+  /** S12 (P1). */
+  adminRetry() {
+    const d = decideAdminRetry(this.state, 'admin', this.now);
+    this.commit(d.write);
+    return d;
+  }
+  /** The probe that follows a VERIFY_TASK. */
+  verified(order: EnqueueOrder, result: ProbeResult) {
+    const d = decideVerifyResult(this.state, order, { seq: order.seq, result }, this.now);
     this.commit(d.write);
     return d;
   }
@@ -107,7 +129,8 @@ describe('failure catalogue at the decision level', () => {
     const sim = new Sim().at(T0 + 20 * MIN);
     const d = sim.reconcile('NOT_FOUND');
     if (d.kind !== 'RECREATE_TASK') throw new Error(d.kind);
-    const t = sim.enqueued(d.enqueue, { result: 'ALREADY_EXISTS' });
+    expect(sim.enqueued(d.enqueue, { result: 'ALREADY_EXISTS' }).kind).toBe('VERIFY_TASK');
+    const t = sim.verified(d.enqueue, 'NOT_FOUND');
     if (t.kind !== 'REDISPATCH') throw new Error(t.kind);
     expect(sim.enqueued(t.enqueue, { result: 'CREATED' }).kind).toBe('SCHEDULED');
     expect(sim.state).toMatchObject({ status: 'ACCEPTED', dispatch: { seq: 2, deliveredSeq: 0 }, processing: { attempts: 0 } });
@@ -222,5 +245,43 @@ describe('failure catalogue at the decision level', () => {
     }
     expect(outcomes).toEqual(['REDISPATCH', 'REDISPATCH', 'FAIL']);
     expect(sim.state).toMatchObject({ status: 'FAILED', statusReason: 'DISPATCH_EXHAUSTED', dispatch: { seq: 3 } });
+  });
+
+  it('S12 (P1): every budget epoch gets MAX_ATTEMPTS starts and MAX_DISPATCH generations; event IDs never repeat', () => {
+    const sim = new Sim();
+    const starts = () => sim.events.filter((e) => e.type === 'PROCESSING_STARTED').length;
+    const retry = () => {
+      const d = sim.adminRetry();
+      if (d.kind !== 'RETRY') throw new Error(d.kind);
+      expect(sim.enqueued(d.enqueue, { result: 'CREATED' }).kind).toBe('SCHEDULED');
+      return d.enqueue.seq;
+    };
+
+    // Epoch 1: transient errors until ATTEMPTS_EXHAUSTED.
+    while (sim.state.status !== 'FAILED') sim.complete(acquire(sim), TRANSIENT);
+    expect([starts(), sim.state.statusReason]).toEqual([MAX_ATTEMPTS, 'ATTEMPTS_EXHAUSTED']);
+
+    // Epoch 2: the old generation is fenced, then every generation is lost until DISPATCH_EXHAUSTED.
+    const firstSeq = retry();
+    expect(sim.deliver(firstSeq - 1).kind).toBe('STALE_DISPATCH');
+    while (sim.state.status !== 'FAILED') {
+      sim.complete(acquire(sim), TRANSIENT);
+      const d = sim.at(sim.state.watchdogAt as number).reconcile('NOT_FOUND');
+      if (d.kind === 'REDISPATCH') sim.enqueued(d.enqueue, { result: 'CREATED' });
+    }
+    expect(sim.state).toMatchObject({ statusReason: 'DISPATCH_EXHAUSTED', dispatch: { seq: firstSeq + MAX_DISPATCH - 1 } });
+    expect(starts()).toBe(MAX_ATTEMPTS + MAX_DISPATCH);
+
+    // Epoch 3: permanent error. Epoch 4: success.
+    retry();
+    sim.complete(acquire(sim), { kind: 'PERMANENT_ERROR', error: { code: 'BAD', message: 'bad' } });
+    expect(sim.state.statusReason).toBe('PERMANENT_ERROR');
+    retry();
+    expect(sim.complete(acquire(sim), OK).kind).toBe('COMPLETE');
+
+    const ids = sim.events.map((e) => e.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.filter((id) => id.startsWith('FAILED-'))).toEqual(['FAILED-a5', 'FAILED-s4', 'FAILED-a9']);
+    expect(sim.state).toMatchObject({ status: 'COMPLETED', processing: { attempts: 10, maxAttempts: 14 }, dispatch: { seq: 6, maxSeq: 8 } });
   });
 });

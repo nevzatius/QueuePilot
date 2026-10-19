@@ -18,10 +18,28 @@ export interface ErrorInfo {
   readonly at: EpochMs;
 }
 
+/*
+ * Budgets and counters.
+ *
+ * A retry budget epoch starts at S1 and, in P1 only, again at each admin retry (S12). The MVP has exactly
+ * one epoch, so there `maxAttempts = MAX_ATTEMPTS` and `maxSeq = MAX_DISPATCH` for the whole lifetime.
+ * - `processing.maxAttempts` / `dispatch.maxSeq` are absolute ceilings, not remaining amounts. S12 raises
+ *   them to `attempts + MAX_ATTEMPTS` and `newSeq + MAX_DISPATCH - 1`, so every epoch gets exactly
+ *   MAX_ATTEMPTS business-logic starts (I5 per epoch) and MAX_DISPATCH generations.
+ * - `attempts`, `seq`, `deliveredSeq` and `duplicateDeliveries` never decrease, not even across S12.
+ *   `checks` is a backoff counter and resets on every new lease and every new generation.
+ * - Event IDs are `{type}-a{attempts}` or `{type}-s{seq}`. Because the counters are monotonic and every
+ *   attempt-scoped terminal event after S12 needs a new lease (attempts++), and every seq-scoped one a new
+ *   generation (seq++), an ID is never reused after an admin retry.
+ * - S12 is the only exit from a terminal status (FAILED only; COMPLETED is always absorbing, I3), and the
+ *   only `seq` increment without proven absence (I7): the old generation is fenced by STALE_DISPATCH
+ *   instead. Both exceptions need an ADR before S12 is enabled.
+ */
+
 export interface ProcessingState {
   /** Business-logic starts so far. Monotonic, also across admin retries, so `-a{n}` event IDs stay unique. */
   readonly attempts: number;
-  /** Attempt budget: `attempts` may grow up to this value. MAX_ATTEMPTS initially; S12 raises it. */
+  /** Attempt budget ceiling: `attempts` may grow up to this value. MAX_ATTEMPTS at S1; only S12 raises it. */
   readonly maxAttempts: number;
   readonly lease: Lease | null;
   readonly lastError: ErrorInfo | null;
@@ -35,7 +53,7 @@ export interface DispatchState {
   readonly deliveredSeq: number;
   /** Consecutive EXISTS probes for the current task; drives the step-4 backoff. */
   readonly checks: number;
-  /** Dispatch budget: `seq` may grow up to this value. MAX_DISPATCH initially; S12 raises it. */
+  /** Dispatch budget ceiling: `seq` may grow up to this value. MAX_DISPATCH at S1; only S12 raises it. */
   readonly maxSeq: number;
   readonly lastError: ErrorInfo | null;
 }
