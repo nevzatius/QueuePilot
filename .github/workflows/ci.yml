@@ -45,10 +45,10 @@ jobs:
         run: pnpm typecheck
       - name: Unit tests
         run: pnpm test
-      - name: Integration tests
-        run: pnpm test:integration
       - name: Build
         run: pnpm build
+      - name: Integration tests
+        run: pnpm test:integration
       - name: Smoke test Node ESM artifacts
         run: |
           node apps/api/dist/index.js

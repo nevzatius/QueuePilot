@@ -54,9 +54,10 @@ export function buildApp(deps: AppDependencies) {
     const code = error instanceof ApiError ? error.code
       : failure.validation || ['FST_ERR_CTP_INVALID_JSON_BODY', 'FST_ERR_CTP_EMPTY_JSON_BODY', 'FST_ERR_CTP_INVALID_MEDIA_TYPE'].includes(failure.code ?? '') ? 'VALIDATION_FAILED'
       : failure.code === 'FST_ERR_CTP_BODY_TOO_LARGE' ? 'PAYLOAD_TOO_LARGE' : 'INTERNAL_ERROR';
-    const problem = problemDetails(code, request.id);
+    const retryAfter = error instanceof ApiError ? error.retryAfter : undefined;
+    const problem = { ...problemDetails(code, request.id), ...(retryAfter && { retryAfterSeconds: retryAfter }) };
     if (problem.status >= 500) request.log.error({ code }, 'API dependency or internal failure');
-    if (error instanceof ApiError && error.retryAfter) reply.header('retry-after', error.retryAfter);
+    if (retryAfter) reply.header('retry-after', retryAfter);
     reply.status(problem.status).type('application/problem+json').send(problem);
   });
   app.setNotFoundHandler((request, reply) => {

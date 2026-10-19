@@ -96,6 +96,7 @@ describe('API boundary', () => {
     const response = await app.inject({ method: 'POST', url: '/api/v1/requests', headers, payload });
     expect(response.statusCode).toBe(503);
     expect(response.headers['retry-after']).toBe('1');
+    expect(response.json()).toMatchObject({ code: 'SERVICE_UNAVAILABLE', retryAfterSeconds: 1 });
     expect(queue.enqueue).not.toHaveBeenCalled();
     await app.close();
   });

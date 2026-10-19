@@ -8,7 +8,7 @@
   "scripts": {
     "lint": "eslint . --max-warnings 0",
     "typecheck": "tsc -b && node scripts/workspaces.mjs typecheck",
-    "test": "vitest run --config vitest.config.ts",
+    "test": "node scripts/test.mjs",
     "test:integration": "node scripts/integration.mjs",
     "test:integration:run": "vitest run --config vitest.integration.config.ts",
     "build": "tsc -b && node scripts/workspaces.mjs build && node scripts/build.mjs",

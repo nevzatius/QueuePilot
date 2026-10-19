@@ -28,11 +28,11 @@ Status values: `todo | active | review | done | blocked`.
 | A0 Agent bootstrap | Claude | – | done (2026-10-19) |
 | A1 Contracts | Claude | A0 | done (merged `d45ed59`) |
 | A2 Domain | Claude | A1 | done (A2.2 / ADR-017 integrated 2026-10-19; supersedes the A2.1 verify flow) |
-| A3 Web | Claude | A1 (mock API until B3) | todo |
+| A3 Web | Claude | A1 (mock API until B3) | merged 2026-10-19 (`593e39b`) |
 | A4 Reviews and integration | Claude | – | continuous |
 | B1 Foundation and CI | Codex | A0 | done (merged `c7c6e00`) |
 | B2 Cloud spike and infra scripts | Codex (scripts) + owner (runs) | B1 | scripts merged (2026-10-19); **C1–C9 NOT RUN**, owner gate open |
-| B3 Platform, auth and ingestion | Codex | A1, A2, B1 | todo |
+| B3 Platform, auth and ingestion | Codex | A1, A2, B1 | merged 2026-10-19 (`b6612bc`); emulator tests re-run pending (see notes) |
 | B4 Queue, worker and reconciler | Codex | A2, B3 | todo |
 | B5 Redis limits, quotas and cache | Codex | B3 | todo |
 | B6 Load tests and verify | Codex | B4, B5, B2 | todo |
@@ -133,3 +133,5 @@ _(none)_
 
 - 2026-10-19: A2.2 (`46e871b`, cherry-picked `-x` as `f9fe0df`) integrated; ADR-017 added, ADR-014 superseded, ADR-011/I7 amended. Domain-only change, no contract changes.
 - 2026-10-19: A2 (`5c71837`) and B2 (`5b1b556`) merged with `--no-ff`. Combined: lint, typecheck, build pass; 449 unit tests (18 files). ADR-014 to ADR-016 added from A2/B2 handoffs.
+
+**A3 + B3 merge notes (2026-10-19).** Merged `claude/a3-web` and `codex/b3-backend` with `--no-ff` (no overlapping files). Integration fixes: (1) API error handler now mirrors `Retry-After` into the Problem body as `retryAfterSeconds` (contract `ProblemDetailsSchema`; the web UI reads only the body). (2) Root `pnpm test` now runs `scripts/test.mjs`: node suites + web jsdom suite + `infra/*.test.mjs`. (3) Root integration config adds `apps/api/test/integration`; `scripts/integration.mjs` also runs the frontend-to-API smoke (`apps/web/smoke/`, spawns `apps/api/dist/server.js`, so CI now builds before integration). Not a CCR: no contract change. Pending: B3 emulator suite and the smoke were not run on the merged tree (port 8080 held by an orphaned emulator; see PROJECT_STATE).
