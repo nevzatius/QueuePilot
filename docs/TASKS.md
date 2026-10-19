@@ -32,9 +32,9 @@ Status values: `todo | active | review | done | blocked`.
 | A4 Reviews and integration | Claude | – | continuous |
 | B1 Foundation and CI | Codex | A0 | done (merged `c7c6e00`) |
 | B2 Cloud spike and infra scripts | Codex (scripts) + owner (runs) | B1 | scripts merged (2026-10-19); **C1–C9 NOT RUN**, owner gate open |
-| B3 Platform, auth and ingestion | Codex | A1, A2, B1 | merged 2026-10-19 (`b6612bc`); emulator tests re-run pending (see notes) |
-| B4 Queue, worker and reconciler | Codex | A2, B3 | todo |
-| B5 Redis limits, quotas and cache | Codex | B3 | todo |
+| B3 Platform, auth and ingestion | Codex | A1, A2, B1 | merged 2026-10-19 (`b6612bc`); emulator suite re-run on merged tree 2026-10-20: pass |
+| B4 Queue, worker and reconciler | Codex | A2, B3 | merged 2026-10-20 (`3b07080`); T1–T13 + races on emulator pass; cloud NOT RUN |
+| B5 Redis limits, quotas and cache | Codex | B3 | merged 2026-10-20 (`9bc5949`); offline pass; **real-Redis suite NOT RUN** (CI only) |
 | B6 Load tests and verify | Codex | B4, B5, B2 | todo |
 | B7 Deploy finalisation and README drafts | Codex | all | todo |
 
@@ -127,7 +127,7 @@ Row changes under ADR-017: **T4** now ends in a new dispatch order (seq=2) with 
 
 ## CCR log
 
-_(none)_
+_(none)_  T1 row note: ADR-017 gives seq=2 after a lost API enqueue (the card text above still says seq=1).
 
 ## Integration log
 
@@ -135,3 +135,4 @@ _(none)_
 - 2026-10-19: A2 (`5c71837`) and B2 (`5b1b556`) merged with `--no-ff`. Combined: lint, typecheck, build pass; 449 unit tests (18 files). ADR-014 to ADR-016 added from A2/B2 handoffs.
 
 **A3 + B3 merge notes (2026-10-19).** Merged `claude/a3-web` and `codex/b3-backend` with `--no-ff` (no overlapping files). Integration fixes: (1) API error handler now mirrors `Retry-After` into the Problem body as `retryAfterSeconds` (contract `ProblemDetailsSchema`; the web UI reads only the body). (2) Root `pnpm test` now runs `scripts/test.mjs`: node suites + web jsdom suite + `infra/*.test.mjs`. (3) Root integration config adds `apps/api/test/integration`; `scripts/integration.mjs` also runs the frontend-to-API smoke (`apps/web/smoke/`, spawns `apps/api/dist/server.js`, so CI now builds before integration). Not a CCR: no contract change. Pending: B3 emulator suite and the smoke were not run on the merged tree (port 8080 held by an orphaned emulator; see PROJECT_STATE).
+- 2026-10-20: B4 (`577263a`, merge `3b07080`) and B5 (`35efa81`, merge `9bc5949`) merged with `--no-ff`. Codex's sandbox could not spawn processes or commit, so Claude ran every check and committed. Integration fixes by Claude: web smoke config root + `SMOKE_API_PORT` (`7ce2252`; the smoke step had found no files before), `queue.test.ts` fixture timing, root workspace deps `@queuepilot/core` and `@queuepilot/contracts` (`71f060d`, `47e4fd1`; hand-made symlinks had hidden the missing links), `ioredis` kept external in API/worker bundles (`a15020b`; the bundled worker crashed at startup). ADR-018 added from the B5 handoff.

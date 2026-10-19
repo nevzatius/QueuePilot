@@ -109,3 +109,10 @@ Status values: Accepted, Pending verification, Superseded.
 - **Consequences:** Extra tasks are possible (outages, stalled creators, lying probes) and are absorbed at the cost of 409/200 responses. Order rate is bounded: ≥5 min apart, ≥30 min apart in attention. A queue outage costs orders, not tasks; recovery takes at most one attention interval. Exactly-once is still not claimed.
 - **Alternatives:** keep ADR-014 and add queue-side fencing (not available in Cloud Tasks); trust tombstone duration (unverified).
 - **Revisit when:** C1–C9 or B4 measurements show extra-task or attention rates that matter. Status: Accepted (owner approved 2026-10-19); verified by domain race (5040 interleavings) and fuzz suites; cloud behaviour NOT VERIFIED.
+
+### ADR-018 (B5) Quota reservations are retained on uncertain acceptance commits
+- **Decision:** An enforced-quota submission reserves its slot in Redis (atomic Lua: user + tenant counters and an operation receipt, one script) *inside* the Firestore acceptance transaction callback, reused across callback retries. The reservation is released only when the failure proves nothing was committed (domain/API errors, definite gRPC codes). After an ambiguous outcome (timeout, crash, unknown error) the slot is kept until the UTC day rollover. Replays and idempotency conflicts never touch Redis.
+- **Why:** Redis and Firestore share no transaction. Releasing after an ambiguous commit could let a durably accepted request lose its slot (over-admission); keeping it can only under-admit.
+- **Consequences:** Rare ambiguous failures can burn quota until midnight UTC. Redis failure on an enforced tenant is `503 QUOTA_UNAVAILABLE` (ADR-009), replays keep working.
+- **Alternatives:** release on every failure (over-admits); a Firestore counter (P2, ADR-009).
+- **Revisit when:** burnt-slot rates are measured against real Upstash. Status: Accepted (2026-10-20). Lua scripts verified only against a test double; **real Redis NOT RUN**.
