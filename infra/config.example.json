@@ -1,0 +1,9 @@
+{
+  "projectId": "replace-with-demo-project",
+  "projectNumber": "123456789012",
+  "environment": "demo",
+  "region": "europe-west1",
+  "apiImage": "europe-west1-docker.pkg.dev/replace-with-demo-project/queuepilot/api@sha256:REPLACE",
+  "workerImage": "europe-west1-docker.pkg.dev/replace-with-demo-project/queuepilot/worker@sha256:REPLACE",
+  "redisSecretVersion": "1"
+}

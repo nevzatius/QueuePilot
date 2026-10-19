@@ -1,0 +1,21 @@
+{
+  "recordedDate": "2026-10-19",
+  "baseCommit": "39cc4369753f027ce0dedab24180682e954d62bf",
+  "sourceCommit": null,
+  "environment": { "mode": "offline", "os": "Windows", "node": "24.18.0", "cloudProject": null, "region": "europe-west1" },
+  "config": "infra/config.example.json (placeholders only)",
+  "configSha256": "6d7b51c34d55f40318251dd7f620c04c6c857dcc3b2a7feaaa399b4e05985839",
+  "repetitions": { "planned": 3, "completed": 0, "note": "Three repetitions required for C8; other checks record actual repetition count." },
+  "reason": "No owner authorization to use GCP credentials or resources. No authenticated or project-resource calls executed; public documentation/discovery schemas reviewed only.",
+  "checks": {
+    "C1": { "status": "NOT RUN", "evidence": [] },
+    "C2": { "status": "NOT RUN", "evidence": [] },
+    "C3": { "status": "NOT RUN", "evidence": [] },
+    "C4": { "status": "NOT RUN", "evidence": [] },
+    "C5": { "status": "NOT RUN", "evidence": [] },
+    "C6": { "status": "NOT RUN", "evidence": [] },
+    "C7": { "status": "NOT RUN", "evidence": [] },
+    "C8": { "status": "NOT RUN", "evidence": [], "p50Ms": null, "p95Ms": null },
+    "C9": { "status": "NOT RUN", "evidence": [] }
+  }
+}

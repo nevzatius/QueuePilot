@@ -1,0 +1,9 @@
+{
+  "hosting": {
+    "site": "replace-with-isolated-hosting-site",
+    "public": "public",
+    "rewrites": [
+      { "source": "/api/**", "run": { "serviceId": "qp-spike-hosting", "region": "europe-west1" } }
+    ]
+  }
+}
