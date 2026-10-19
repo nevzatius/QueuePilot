@@ -47,7 +47,7 @@ jobs:
         run: pnpm test
       - name: Build
         run: pnpm build
-      - name: Integration tests
+      - name: Integration tests (emulators, Redis Lua, web and worker smoke)
         run: pnpm test:integration
       - name: Check Node ESM artifacts (startup smoke runs inside integration)
         run: |

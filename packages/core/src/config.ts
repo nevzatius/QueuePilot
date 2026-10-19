@@ -21,6 +21,8 @@ const ConfigSchema = z.object({
   QP_INGEST_MAX_INFLIGHT: integer(32),
   QP_MAX_BACKLOG: integer(20_000),
   QP_MAX_INSTANCES: integer(5),
+  REDIS_URL: z.url().refine((value) => ['redis:', 'rediss:'].includes(new URL(value).protocol)).default('redis://127.0.0.1:6379'),
+  QP_REDIS_ENABLED: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
   QP_QUOTA_FAILURE_MODE: z.enum(['closed', 'open']).default('closed'),
 });
 export type Config = z.infer<typeof ConfigSchema>;

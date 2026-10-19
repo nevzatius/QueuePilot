@@ -13,7 +13,7 @@ import {
   AdmissionControl, ApiError, bearerToken, enqueueAccepted, logOptions, MemoryRateLimiter,
   MetricsService, problemDetails, unavailableQuota,
 } from '@queuepilot/core';
-import type { Config, MembershipService, QuotaStore, RateLimiter, QueuePort, RequestRepository, Tenant, TokenVerifier } from '@queuepilot/core';
+import type { Config, MembershipService, QuotaStore, QuotaSubmitter, RateLimiter, QueuePort, RequestRepository, Tenant, TokenVerifier } from '@queuepilot/core';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -26,7 +26,7 @@ declare module 'fastify' {
 export type AppDependencies = {
   config: Config; verifier: TokenVerifier; memberships: MembershipService; requests: RequestRepository;
   queue: QueuePort; admission: AdmissionControl; metrics: MetricsService; rateLimiter: RateLimiter;
-  quota?: QuotaStore; bootstrapLimiter?: RateLimiter; logger?: boolean;
+  quota?: QuotaStore; submission?: QuotaSubmitter; bootstrapLimiter?: RateLimiter; logger?: boolean;
 };
 
 export function buildApp(deps: AppDependencies) {
@@ -86,17 +86,22 @@ export function buildApp(deps: AppDependencies) {
     schema: { body: CreateRequestBodySchema, headers: IdempotencyHeadersSchema, response: { 202: CreateRequestResponseSchema } },
   }, async (request, reply) => {
     const { membership, tenant } = request.access;
-    await deps.rateLimiter.consume(`${membership.tenantId}:${request.identity.uid}`, tenant.limits.submitPerMin);
-    if (tenant.quotaMode === 'enforced') {
-      await (deps.quota ?? unavailableQuota).consume(membership.tenantId, request.identity.uid, tenant.limits);
-    }
+    await deps.rateLimiter.consume(JSON.stringify([membership.tenantId, request.identity.uid]), tenant.limits.submitPerMin);
     const release = await deps.admission.acquire(() => deps.metrics.backlog());
     let accepted;
     try {
-      accepted = await deps.requests.submit({
+      const input = {
         body: request.body, key: request.headers['idempotency-key'], tenantId: membership.tenantId,
         uid: request.identity.uid, correlationId: request.id,
-      });
+      };
+      if (deps.submission) accepted = await deps.submission.submit(input, tenant);
+      else {
+        // Compatibility seam for B3 callers; runtime always uses the quota-aware adapter.
+        if (tenant.quotaMode === 'enforced') {
+          await (deps.quota ?? unavailableQuota).consume(membership.tenantId, request.identity.uid, tenant.limits);
+        }
+        accepted = await deps.requests.submit(input);
+      }
     } finally { release(); }
     if (!accepted.replayed) {
       try {
