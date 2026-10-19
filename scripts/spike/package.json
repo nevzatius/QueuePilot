@@ -1,0 +1,7 @@
+{
+  "name": "queuepilot-isolated-cloud-probe",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24 <25" },
+  "dependencies": { "redis": "6.3.0" }
+}
