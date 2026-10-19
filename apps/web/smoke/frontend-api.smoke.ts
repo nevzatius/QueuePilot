@@ -13,7 +13,7 @@ const fsHost = process.env.FIRESTORE_EMULATOR_HOST ?? '';
 for (const host of [authHost, fsHost]) {
   if (!/^(localhost|127\.0\.0\.1):\d+$/.test(host)) throw new Error('Auth and Firestore emulators must be local');
 }
-const PORT = 18_080;
+const PORT = Number(process.env.SMOKE_API_PORT ?? 18_080);
 const base = `http://127.0.0.1:${PORT}`;
 const docs = `http://${fsHost}/v1/projects/demo-queuepilot/databases/(default)/documents`;
 const owner = { authorization: 'Bearer owner', 'content-type': 'application/json' };
