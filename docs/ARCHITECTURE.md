@@ -74,22 +74,26 @@ Firestore security rules deny all client access. Only the backend reads and writ
 
 Stored `status` values: `ACCEPTED | PROCESSING | COMPLETED | FAILED`.
 UI-only derived views: `QUEUED` (ACCEPTED, attempts=0) and `RETRYING` (ACCEPTED, attempts>0).
-Constants: `MAX_ATTEMPTS=5`, `MAX_DISPATCH=3`, `LEASE=60s`, `PROC_TIMEOUT=20s`.
+Constants: `MAX_ATTEMPTS=5`, `MAX_DISPATCH=3` (prompt orders), `ATTENTION_INTERVAL=30m`, `LEASE=60s`, `PROC_TIMEOUT=20s`.
 
 | # | From | Trigger | Guard | To | Effects |
 |---|---|---|---|---|---|
 | S1 | ∅ | POST | key absent or logically expired | ACCEPTED | seq=1, deliveredSeq=0, attempts=0, watchdog=+60s |
-| S2 | ACCEPTED | delivery(seq) | seq==dispatch.seq, attempts<MAX | PROCESSING | attempts++, new leaseId, leaseExp=+60s, deliveredSeq=seq, watchdog=leaseExp+30s |
-| S3 | PROCESSING | delivery(seq) | lease expired, seq current, attempts<MAX | PROCESSING | same as S2 + `LEASE_TAKEOVER` event |
+| S2 | ACCEPTED | delivery(seq) | seq≤dispatch.seq, attempts<MAX | PROCESSING | attempts++, new leaseId, leaseExp=+60s, deliveredSeq=max(deliveredSeq, seq), checks=0, attentionSince=null, watchdog=leaseExp+30s |
+| S3 | PROCESSING | delivery(seq) | lease expired, seq≤dispatch.seq, attempts<MAX | PROCESSING | same as S2 + `LEASE_TAKEOVER` event |
 | S4 | PROCESSING | success | leaseId matches | COMPLETED | result, completedAt, delete watchdog |
 | S5 | PROCESSING | transient error | leaseId matches, attempts<MAX | ACCEPTED | clear lease, lastError, watchdog=+5m. HTTP 503 |
 | S6 | PROCESSING | transient error | leaseId matches, attempts≥MAX | FAILED | `ATTEMPTS_EXHAUSTED`. HTTP 200 |
 | S7 | PROCESSING | permanent error | leaseId matches | FAILED | `PERMANENT_ERROR`. HTTP 200 |
 | S8 | ACCEPTED/PROCESSING (lease expired) | delivery or reconciler | attempts≥MAX | FAILED | `ATTEMPTS_EXHAUSTED` |
-| S9 | ACCEPTED/PROCESSING (lease expired) | reconciler: task absent | seq<MAX_DISPATCH | unchanged | seq++, then createTask |
-| S10 | same | reconciler: task absent | seq≥MAX_DISPATCH | FAILED | `DISPATCH_EXHAUSTED` |
+| S9 | ACCEPTED/PROCESSING (lease expired) | reconciler: no task observed (NOT_FOUND or UNKNOWN) | seq<maxSeq | unchanged | **dispatch order**: txn seq++ and watchdog=+5m, then createTask for the new seq (ADR-017) |
+| S10 | same | same | seq≥maxSeq | unchanged (non-terminal) | **attention order**: same as S9, plus `dispatch.attentionSince` set (first time) and watchdog=+30m. Never FAILED. Cleared by the next delivery that acquires a lease |
 | S11 | COMPLETED/FAILED | any | – | unchanged | absorbing |
 | S12 (P1) | FAILED | admin retry | role=admin (uncached check) | ACCEPTED | new retry budget epoch: `processing.maxAttempts = attempts + MAX_ATTEMPTS`, `seq++`, `dispatch.maxSeq = seq + MAX_DISPATCH - 1`. Not an MVP feature; needs an ADR before it is enabled (ADR-015) |
+
+**Dispatch is a wake-up, never a correctness signal (ADR-017).** A Cloud Tasks task only wakes a worker. Firestore alone decides whether business logic runs: the lease (I4), the attempt budget (I5) and terminal absorption (I3). Any task of a runnable request may process it, whatever its `seq`; every extra task is absorbed. No decision depends on `GetTask`, `ALREADY_EXISTS`, tombstones or their duration.
+
+**Dispatch order and unique creator.** A dispatch order commits `seq++` (and the watchdog) in one transaction **before** `createTask`. The name `r-{id}-{seq}` therefore has exactly one creator: the API for seq 1 (after S1), and the transaction that committed seq n for n≥2. Two reconcilers never share a name. A stalled creator can only add a late, harmless extra task. `ALREADY_EXISTS` can only answer the creator's own earlier call, so it counts as CREATED.
 
 **Worker, `decideDelivery(doc, delivery, now)`** (first match wins):
 
@@ -97,44 +101,37 @@ Constants: `MAX_ATTEMPTS=5`, `MAX_DISPATCH=3`, `LEASE=60s`, `PROC_TIMEOUT=20s`.
 |---|---|---|
 | no document | ORPHAN | 200 |
 | terminal | DUPLICATE_SUPPRESSED (duplicateDeliveries++) | 200 |
-| seq < dispatch.seq | STALE_DISPATCH | 200 |
+| seq > dispatch.seq (anomaly: tasks are created after their seq commits) | FUTURE_DISPATCH (no write, ERROR log) | 200 |
 | PROCESSING and lease valid | LEASE_HELD (no write) | **409** |
-| attempts ≥ MAX | FAIL(ATTEMPTS_EXHAUSTED) | 200 |
+| attempts ≥ maxAttempts | FAIL(ATTEMPTS_EXHAUSTED) | 200 |
 | otherwise | ACQUIRE_LEASE, then process | 200 or 503 |
 
-**Reconciler, `decideReconcile(doc, probe, now)`**. Query: `watchdogShard==s AND watchdogAt<=now`, limit 25 per shard, every 60 s.
+There is no STALE_DISPATCH: a delivery with `seq < dispatch.seq` is a stale **wake-up** and is accepted safely. Older and newer tasks of one request are interchangeable; duplicates meet the lease (409) or the budget.
+
+**Reconciler, `decideReconcile(doc, probe, now)`**. Query: `watchdogShard==s AND watchdogAt<=now`, limit 25 per shard, every 60 s. The probe is an optional load hint (adapters that skip it pass UNKNOWN).
 
 | Step | Condition | Decision |
 |---|---|---|
 | 1 | terminal | clear watchdog |
 | 2 | PROCESSING, lease valid | watchdog = leaseExp+30s |
-| 3 | attempts ≥ MAX | FAIL(ATTEMPTS_EXHAUSTED) |
-| 4 | getTask = EXISTS | wait: checks++, watchdog = now + min(2^checks min, 15 min) |
-| 5 | getTask = NOT_FOUND and deliveredSeq < seq | Claim (optimistic, below), then createTask with the **same name**. OK → watchdog +5m. ALREADY_EXISTS → `VERIFY_TASK` (re-probe, below). Other error → back off 1 min, seq unchanged |
-| 6 | NOT_FOUND and (delivered, or a tombstone proven by the re-probe) | seq<`dispatch.maxSeq`: txn seq++ (guard: seq and status unchanged), then createTask. Otherwise FAIL(DISPATCH_EXHAUSTED) |
-| – | getTask = **any other error** (incl. PERMISSION_DENIED) | `PROBE_UNKNOWN`: no state change, watchdog +1m, ERROR log. **Never treated as absence** (ADR-011) |
+| 3 | attempts ≥ maxAttempts | FAIL(ATTEMPTS_EXHAUSTED) (the only reconciler failure) |
+| 4 | probe for current `seq` = EXISTS | WAIT_FOR_TASK: checks++, watchdog = now + min(2^checks min, 15 min). **No order**, so a backlog does not multiply tasks |
+| 5 | probe = NOT_FOUND or UNKNOWN (incl. PERMISSION_DENIED) | DISPATCH: S9 (seq<maxSeq) or S10 attention (seq≥maxSeq). Commit seq++ then createTask |
+| – | probe refers to an older seq | PROBE_STALE: ignore, no write |
 
-**Reconciler adapter flow (ADR-014, `packages/domain/src/reconcile.ts`).** Three pure functions; the adapter only executes their decisions, each inside a transaction on a fresh read.
+**Processing failure vs dispatch failure.** *Processing* failure (S6, S7, S8) means business logic ran and was rejected or ran out of attempts (I5); it is the only way a request becomes FAILED. *Dispatch* trouble (no task observed, `createTask` errors, queue outage) never fails a request: the request stays non-terminal and durable, S10 marks it `attentionSince`, and orders continue. `DISPATCH_EXHAUSTED` is no longer produced. A `getTask` error such as PERMISSION_DENIED can no longer be "misread as absence" to harmful effect (ADR-011 amended): the worst case is an extra order and an extra task.
+
+**Dispatch intervals.** Orders with `seq≤maxSeq` are prompt: watchdog +5 min (S9). Later orders are attention orders: at most one every **30 min** until a delivery clears `attentionSince` (S10). Without a lease in between, consecutive orders are ≥5 min apart, or ≥30 min apart in attention. A failed `createTask` creates no task, so an outage costs orders but not tasks; recovery takes at most one attention interval.
+
+**Reconciler adapter flow (ADR-017, `packages/domain/src/reconcile.ts`).** Pure functions; the adapter only executes their decisions, each in a transaction on a fresh read. Crashing or stalling at any point is safe.
 
 1. `decideReconcile(state, null, now)` on a plain read; unless it returns `PROBE_TASK`, re-run it in a transaction and commit its `write`.
-2. `PROBE_TASK`: `getTask(r-{id}-{seq})`, mapped to `EXISTS | NOT_FOUND | UNKNOWN` (every error except NOT_FOUND is UNKNOWN), then `decideReconcile(fresh, probe, now)`.
-3. `RECREATE_TASK` / `REDISPATCH`: after the commit, `createTask` for `enqueue.seq`, then `decideEnqueueResult(fresh, order, outcome, now)`.
-4. `VERIFY_TASK` (createTask answered ALREADY_EXISTS): probe the same `seq` again, then `decideVerifyResult(fresh, order, probe, now)`:
+2. `PROBE_TASK`: optionally `getTask(r-{id}-{seq})`, mapped to `EXISTS | NOT_FOUND | UNKNOWN` (every error except NOT_FOUND is UNKNOWN), then in a transaction `decideReconcile(fresh, probe, now)` and commit `write`.
+3. `DISPATCH`: **order before create.** The step-2 commit already holds the new `seq`. Only then call `createTask` for `enqueue.seq` (retrying the same name within the pass is fine), then in a transaction `decideEnqueueResult(fresh, order, outcome, now)`, which only records `dispatch.lastError` (never status, seq, watchdog or budgets). Outcomes: CREATED, ALREADY_EXISTS (= CREATED), FAILED.
 
-| Re-probe | `purpose` | Decision |
-|---|---|---|
-| EXISTS | any | WAIT_FOR_TASK (as step 4; never redispatch) |
-| UNKNOWN | any | PROBE_UNKNOWN (no state change, +1 min, ERROR log) |
-| NOT_FOUND | `RECREATE` | tombstone proven → attempts spent: FAIL(ATTEMPTS_EXHAUSTED); else REDISPATCH (S9) or FAIL(DISPATCH_EXHAUSTED) (S10) |
-| NOT_FOUND | `REDISPATCH` | `RECHECK`: only this pass tried the name, so this is unexpected. seq unchanged, +1 min, WARN log |
+If `createTask` never runs or fails, the committed watchdog fires and the next pass places a new order. There are no claims, `VERIFY_TASK`, `decideVerifyResult`, RECREATE/REDISPATCH purposes or SHORT_RECHECK.
 
-A REDISPATCH from step 4 returns to step 3 once; its own ALREADY_EXISTS ends in a wait or a recheck, so `seq` increments at most once per pass.
-
-**ALREADY_EXISTS is never evidence on its own.** It may mean a live task (possibly created late by a stalled claimant), our own call whose response was lost, or a tombstone. Only a fresh NOT_FOUND after it, committed under the still-current claim, proves the generation can never run (I7).
-
-**Optimistic claim.** The decision that precedes `createTask` commits `watchdogAt = now + 1 min` and returns it as `EnqueueOrder.claim`. Every later decision (`decideEnqueueResult`, `decideVerifyResult`) first checks, on a fresh read: not terminal, `seq` unchanged, `watchdogAt == claim`, lease not valid. Otherwise it returns a NOOP (`TERMINAL | STALE_SEQ | CLAIM_LOST | LEASE_HELD`) and writes nothing. A claim fences Firestore writes, not queue side effects. Abandoning the flow is safe: the claim expires and the next pass restarts at step 1. A new claimant acts only once the previous claim is due, so claims strictly increase.
-
-**Budget ceilings.** `processing.maxAttempts` and `dispatch.maxSeq` are stored absolute ceilings, not remaining counts. The MVP has one epoch: `maxAttempts = MAX_ATTEMPTS (5)`, `maxSeq = MAX_DISPATCH (3)`. Every "attempts ≥ MAX" and "seq ≥ MAX_DISPATCH" check in this section compares against these fields. Only S12 raises them. `attempts`, `seq`, `deliveredSeq` and `duplicateDeliveries` never decrease.
+**Budget ceilings.** `processing.maxAttempts` is a stored absolute ceiling (I5). `dispatch.maxSeq` is the last *prompt* dispatch generation, not a ceiling: later orders are attention orders (S10). The MVP has one epoch: `maxAttempts = MAX_ATTEMPTS (5)`, `maxSeq = MAX_DISPATCH (3)`. Every "attempts ≥ MAX" and "seq ≥ maxSeq" check compares against these fields. Only S12 raises them. `attempts`, `seq`, `deliveredSeq` and `duplicateDeliveries` never decrease.
 
 **S12 exceptions (P1 only).** S12 is the only exit from a terminal status. It applies to FAILED only; COMPLETED stays absorbing (I3). It also sets `maxAttempts`/`maxSeq` above their MVP values (I5 then holds per epoch). Neither exception is active in the MVP (no route, no admin role path); enabling them needs an ADR.
 
@@ -146,9 +143,9 @@ A REDISPATCH from step 4 returns to step 3 once; its own ALREADY_EXISTS ends in 
 - **I4** Only the holder of the current `leaseId` can commit COMPLETED or FAILED from PROCESSING.
 - **I5** Business logic starts at most `MAX_ATTEMPTS` times per request (counted in Firestore, not by queue headers).
 - **I6** Triage output is a pure function of (request content, `rulesVersion`).
-- **I7** `dispatch.seq` increments only after the task's absence is proven.
+- **I7** Each task name `r-{id}-{seq}` has exactly one creator: `dispatch.seq` increments in a committed transaction before `createTask` for that seq. Correctness (I3–I5) never depends on task identity, `GetTask`, `ALREADY_EXISTS` or tombstones (ADR-017; replaces the absence-proof wording).
 
-**Liveness.** Crashes and transient errors are recovered by Cloud Tasks retries plus lease takeover. Lost enqueues and exhausted tasks are recovered by the reconciler. If the reconciler is down, those requests stay non-terminal but durable, and `stuck = count(watchdogAt < now-15m)` exposes them.
+**Liveness.** Crashes and transient errors are recovered by Cloud Tasks retries plus lease takeover. Lost enqueues and exhausted tasks are recovered by the reconciler (new dispatch orders; attention orders every 30 min once prompt orders are spent). If the reconciler is down, those requests stay non-terminal but durable, and `stuck = count(watchdogAt < now-15m)` and the attention count (`attentionSince != null`) expose them.
 **Non-claims:** exactly-once delivery, effectively-once external side effects, any bound on queue wait time.
 
 ## 8. Cloud Tasks
@@ -157,9 +154,9 @@ A REDISPATCH from step 4 returns to step 3 once; its own ALREADY_EXISTS ends in 
 - Queue settings: `maxAttempts=10`, `maxRetryDuration=600s`, `minBackoff=2s`, `maxBackoff=60s`, `maxDoublings=4`, `maxDispatchesPerSecond=20`, `maxConcurrentDispatches=30`. Worker `dispatchDeadline=30s`.
 - A task is deleted only when **both** maxAttempts **and** maxRetryDuration are exhausted. Queue retries are a safety net only; correctness relies on Firestore (I5).
 - The `X-CloudTasks-TaskRetryCount` and `TaskExecutionCount` headers are per task and include infrastructure failures. They are logged only.
-- A name stays deduplicated for about 1 h after deletion. `ALREADY_EXISTS` is information, never proof of delivery.
-- **Assumptions pending live verification (C1/C2, B2):** (a) `getTask` reflects a successful `createTask` immediately; (b) `getTask` on a completed/deleted task returns NOT_FOUND (C1); (c) a deleted name keeps answering ALREADY_EXISTS for some time (C2). No decision depends on the tombstone duration: if it expires, the same name is simply created again. If (a) or (b) fails, revisit ADR-003 and ADR-014 before B4.
-- Semantics are verified in the cloud spike (C1–C9, `docs/TASKS.md` B2). If the spike contradicts them, the fallback is a conservative time-based step 4 (ADR-003).
+- A name stays deduplicated for about 1 h after deletion. `ALREADY_EXISTS` counts as CREATED for the order's unique creator and is never evidence about the queue (ADR-017).
+- **Probe assumptions (C1/C2, B2) are optimisation-only.** `getTask` is a load hint for backpressure (EXISTS waits). If C1/C2 contradict it, the cost is extra orders and tasks, never wrong state; no decision depends on tombstone duration.
+- Semantics are verified in the cloud spike (C1–C9, `docs/TASKS.md` B2). If the spike contradicts them, the fallback is to drop the probe and rely on the 5 m / 30 m order cadence (ADR-003, ADR-017).
 
 ## 9. Idempotency
 

@@ -27,7 +27,7 @@ Status values: `todo | active | review | done | blocked`.
 |---|---|---|---|
 | A0 Agent bootstrap | Claude | – | done (2026-10-19) |
 | A1 Contracts | Claude | A0 | done (merged `d45ed59`) |
-| A2 Domain | Claude | A1 | done (merged 2026-10-19; includes A2.1 verify fix) |
+| A2 Domain | Claude | A1 | done (A2.2 / ADR-017 integrated 2026-10-19; supersedes the A2.1 verify flow) |
 | A3 Web | Claude | A1 (mock API until B3) | todo |
 | A4 Reviews and integration | Claude | – | continuous |
 | B1 Foundation and CI | Codex | A0 | done (merged `c7c6e00`) |
@@ -44,7 +44,7 @@ Status values: `todo | active | review | done | blocked`.
 
 ### A2 Domain: `packages/domain`
 - `decideDelivery`, `decideReconcile`, `decideEnqueueResult`, `decideVerifyResult` (ARCHITECTURE §6), idempotency expiry, canonical fingerprint, versioned triage rules (§17).
-- **Delivered:** B4 adapters must follow the "Reconciler adapter flow" in §6 (claim, VERIFY_TASK re-probe) and read budgets from `processing.maxAttempts` / `dispatch.maxSeq`.
+- **Delivered (ADR-017):** `decideDelivery`, `decideReconcile`, `decideEnqueueResult` (`decideVerifyResult`, claims and `VERIFY_TASK` are gone). B4 adapters follow the §6 "Reconciler adapter flow" and read budgets from `processing.maxAttempts` / `dispatch.maxSeq`.
 - **Accept:** one table-driven test for each row of S1–S12 and both decision tables. No IO imports. Cross-review: Codex.
 
 ### A3 Web: `apps/web`
@@ -100,7 +100,14 @@ Status values: `todo | active | review | done | blocked`.
 | T13 | Permanent error → FAILED, attempts=1 |
 | T14–T16 (P1) | Crash on the final attempt; replay heal; purge until DISPATCH_EXHAUSTED |
 
-Additional B4 test: a getTask PERMISSION_DENIED changes no state (ADR-011).
+Row changes under ADR-017: **T4** now ends in a new dispatch order (seq=2) with no tombstone proof; **T9** is a stale-seq delivery that is *accepted* and processed safely (no STALE_DISPATCH), not dropped; **T14–T16** no longer end in DISPATCH_EXHAUSTED but in attention (S10).
+
+**B4 adapter integration contract (ADR-017).**
+- *Reconciler order-before-create:* (1) plain read + `decideReconcile(state, null, now)`; (2) optional `getTask` mapped to EXISTS | NOT_FOUND | UNKNOWN, then `decideReconcile(fresh, probe, now)` in a transaction; (3) on DISPATCH the commit (seq++, watchdog) happens **before** `createTask(enqueue.seq)`; then `decideEnqueueResult` records `dispatch.lastError` only. ALREADY_EXISTS is CREATED. Never branch on GetTask, ALREADY_EXISTS or tombstones. No claims or VERIFY_TASK.
+- *Worker lease and fencing:* run `decideDelivery` in a transaction on a fresh read; acquire the lease (new random `leaseId`) before any business logic; accept deliveries of any `seq ≤ dispatch.seq`; log FUTURE_DISPATCH at ERROR; 409 on a valid foreign lease; complete/fail only via `decideCompletion` fenced by `leaseId` (I4); count attempts in Firestore (I5), never from queue headers.
+- *Required race regression coverage (B4, against LocalDispatchQueue with fake Clock):* stalled creator creates late after a newer order (no burned seq, no FAILED at seq=maxSeq); two concurrent reconcilers (at most one seq++ per due watchdog); duplicate and stale-seq deliveries with one COMPLETED; delayed createTask after completion (absorbed as DUPLICATE_SUPPRESSED); createTask failure and queue outage (attention, never FAILED, order rate ≥5 m / ≥30 m); lying probe (EXISTS/NOT_FOUND/UNKNOWN incl. PERMISSION_DENIED); crash between order commit and createTask. Mirror the domain race (5040 interleavings) and fuzz (800 schedules) suites, which stay in `packages/domain/test`.
+- *Scope:* S12 admin retry stays **outside the MVP** (needs its own ADR, ADR-015).
+- Additional B4 test: a getTask PERMISSION_DENIED never fails a request and at worst yields an extra order (ADR-011 amended).
 
 ### B5 Redis: `packages/core/{ratelimit,quota,cache}`
 - **Accept:**
@@ -124,4 +131,5 @@ _(none)_
 
 ## Integration log
 
+- 2026-10-19: A2.2 (`46e871b`, cherry-picked `-x` as `f9fe0df`) integrated; ADR-017 added, ADR-014 superseded, ADR-011/I7 amended. Domain-only change, no contract changes.
 - 2026-10-19: A2 (`5c71837`) and B2 (`5b1b556`) merged with `--no-ff`. Combined: lint, typecheck, build pass; 449 unit tests (18 files). ADR-014 to ADR-016 added from A2/B2 handoffs.

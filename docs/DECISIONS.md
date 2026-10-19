@@ -18,6 +18,7 @@ Status values: Accepted, Pending verification, Superseded.
 ### ADR-003 Correctness in Firestore; the reconciler redispatches only on proven absence
 - **Decision:** `processing.attempts` is the budget. `dispatch.seq` increments only after `getTask` returns NOT_FOUND. A failed createTask is retried under the same name. Stored status has 4 values. A valid foreign lease gets `409`.
 - **Why:** Fixes v0.1 defects H1–H7: generation loss, redispatch of backlog tasks, misuse of RetryCount, the dual-condition deletion rule, and slow crash recovery.
+- **Amendment (ADR-017):** the "increments only after `getTask` returns NOT_FOUND" rule is replaced: `seq` increments in a committed order before `createTask`, and `getTask` is only a load hint. The Firestore-budget and 409 parts stand.
 - **Alternatives:** time-based watchdog; task-first enqueue; separate outbox collection.
 - **Revisit when:** C1/C2 spike results contradict getTask or tombstone behaviour. Fallback: a conservative time-based step 4. Status: Pending verification (C1–C5).
 
@@ -63,11 +64,12 @@ Status values: Accepted, Pending verification, Superseded.
 - **Alternatives:** no cache, which means one Firestore read per request; Redis pub/sub invalidation (P2).
 - **Revisit when:** a stricter revocation SLO is needed. Status: Accepted.
 
-### ADR-011 (correction 1) Reconciler IAM and probe errors
+### ADR-011 (correction 1) Reconciler IAM and probe errors (amended by ADR-017)
 - **Decision:** `qp-worker-sa` gets a queue-scoped custom role with `cloudtasks.tasks.create` and `cloudtasks.tasks.get`. Any getTask error other than NOT_FOUND, including PERMISSION_DENIED, is `PROBE_UNKNOWN`: no state change, an ERROR log, and a retry in 1 min.
 - **Why:** A missing permission must not be misread as task absence, which would trigger redispatch and burn `seq`.
 - **Alternatives:** project-level `cloudtasks.viewer`, which is broader than needed.
 - **Revisit when:** C9 shows that queue-level IAM is unsupported (then grant at project level). Status: Pending verification (C9).
+- **Amendment (ADR-017):** `getTask` is now an optional load hint, not evidence. An error other than NOT_FOUND is still UNKNOWN, logged at ERROR and never terminal, but it is treated like NOT_FOUND for ordering: it may place a new dispatch order (cost: an extra, absorbed task). The "no state change, retry in 1 min" rule is replaced by the ordinary 5 m / 30 m order cadence. The IAM grant stays so the probe can reduce redundant orders.
 
 ### ADR-012 (correction 4) Ingestion admission control
 - **Decision:** A per-instance token bucket (40/s), an in-flight commit semaphore (32), a backlog guard (20 000 ACCEPTED) and `maxInstances=5` bound ingestion writes without depending on Redis.
@@ -82,6 +84,7 @@ Status values: Accepted, Pending verification, Superseded.
 - **Revisit when:** more than two agents work concurrently. Status: Accepted.
 
 ### ADR-014 (A2) Verified ALREADY_EXISTS and optimistic claim
+- **Status: SUPERSEDED by ADR-017.** Kept for history.
 - **Decision:** `ALREADY_EXISTS` from `createTask` is never proof of a tombstone. It yields `VERIFY_TASK`: re-probe the same `seq`, then `decideVerifyResult`. Only NOT_FOUND after it, under the still-current claim, proves absence (I7). The pre-`createTask` decision commits `watchdogAt = now+1min` as a claim; later decisions are NOOPs if the request is terminal, `seq` moved, the claim was lost or a lease is valid. A `REDISPATCH` generation that answers ALREADY_EXISTS then NOT_FOUND is a `RECHECK`, not proof. `seq` increments at most once per pass.
 - **Why:** A claim fences Firestore writes, not queue side effects. A stalled claimant can create the task after a newer claimant probed NOT_FOUND; treating that ALREADY_EXISTS as a tombstone would redispatch a live task and burn `seq`.
 - **Alternatives:** trust ALREADY_EXISTS as a tombstone (original step 6), rejected.
@@ -98,3 +101,11 @@ Status values: Accepted, Pending verification, Superseded.
 - **Why:** Prevents accidental paid or irreversible actions and Scheduler runs against skeleton services.
 - **Alternatives:** a single unattended apply, rejected.
 - **Revisit when:** C1–C9 are run in the demo project. Status: Accepted; cloud behaviour NOT VERIFIED (C1–C9 pending, ADR-003/007/011).
+
+### ADR-017 (A2.2) Dispatch is a wake-up, never a correctness signal
+- **Decision:** A Cloud Tasks task only wakes a worker. Firestore alone decides execution (lease I4, attempt budget I5, terminal absorption I3). (1) Every dispatch order commits `seq++` and the watchdog before `createTask`, so each name `r-{id}-{seq}` has exactly one creator; `ALREADY_EXISTS` counts as CREATED. (2) The worker processes any delivery of a runnable request whatever its `seq` (no STALE_DISPATCH); `seq` greater than `dispatch.seq` is an anomaly (FUTURE_DISPATCH, no write). (3) No decision depends on `GetTask`, `ALREADY_EXISTS` or tombstones; `getTask` EXISTS only backs off (backpressure), NOT_FOUND/UNKNOWN places an order. (4) Dispatch never fails a request: S9 orders are prompt (+5 min, `seq<maxSeq`); S10 is an attention order (+30 min, `dispatch.attentionSince` set, request non-terminal) until a delivery clears it. `DISPATCH_EXHAUSTED` is no longer produced. (5) Removed: claims, `VERIFY_TASK`, `decideVerifyResult`, RECREATE/REDISPATCH purposes, SHORT_RECHECK. `decideEnqueueResult` only records `dispatch.lastError`.
+- **Amends I7:** from "seq increments only after absence is proven" to "each task name has exactly one creator; correctness never depends on task identity".
+- **Why:** A Firestore claim cannot fence Cloud Tasks side effects. Under ADR-014 a stalled claimant could create its task after a newer claimant had "proven" a tombstone, burning `seq` or, at `maxSeq`, failing a live request. Absence cannot be proven from outside the queue, so the design stops needing the proof.
+- **Consequences:** Extra tasks are possible (outages, stalled creators, lying probes) and are absorbed at the cost of 409/200 responses. Order rate is bounded: ≥5 min apart, ≥30 min apart in attention. A queue outage costs orders, not tasks; recovery takes at most one attention interval. Exactly-once is still not claimed.
+- **Alternatives:** keep ADR-014 and add queue-side fencing (not available in Cloud Tasks); trust tombstone duration (unverified).
+- **Revisit when:** C1–C9 or B4 measurements show extra-task or attention rates that matter. Status: Accepted (owner approved 2026-10-19); verified by domain race (5040 interleavings) and fuzz suites; cloud behaviour NOT VERIFIED.
