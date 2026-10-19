@@ -7,6 +7,6 @@
   "dependencies": {
     "@queuepilot/core": "workspace:*", "@queuepilot/contracts": "workspace:*", "@queuepilot/domain": "workspace:*",
     "fastify": "5.12.7", "fastify-type-provider-zod": "7.0.0", "firebase-admin": "14.5.0",
-    "google-auth-library": "11.3.1", "pino": "10.4.0", "zod": "^4.6.7"
+    "google-auth-library": "11.3.1", "ioredis": "6.0.0", "pino": "10.4.0", "zod": "^4.6.7"
   }
 }
