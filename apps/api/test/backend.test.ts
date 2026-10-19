@@ -5,14 +5,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { ProblemDetailsSchema } from '@queuepilot/contracts';
 import {
   AdmissionControl, ApiError, FirebaseTokenVerifier, loadConfig, createLogger, MembershipService,
-  MemoryRateLimiter, MetricsService, enqueueAccepted,
+  MemoryRateLimiter, MetricsService, enqueueAccepted, ManagedRedis, RedisQuotaStore, RedisRateLimiter,
 } from '@queuepilot/core';
-import type { MembershipStore, RequestRepository, Tenant } from '@queuepilot/core';
+import type { MembershipStore, QuotaStore, QuotaSubmitter, RequestRepository, Tenant } from '@queuepilot/core';
 import { buildApp } from '../src/app.js';
 
 const tenant: Tenant = { name: 'Sandbox', status: 'active', openSignup: true, quotaMode: 'none', schemaVersion: 1,
   limits: { submitPerMin: 1000, submitPerDayUser: 30, submitPerDayTenant: 2000 } };
-function fixture() {
+function fixture(quota?: QuotaStore, submission?: QuotaSubmitter) {
   let now = 1000;
   const clock = { now: () => now };
   const member = { tenantId: 'sandbox', role: 'member' as 'member' | 'admin', status: 'active' as 'active' | 'suspended', schemaVersion: 1 as const };
@@ -34,7 +34,7 @@ function fixture() {
   }) };
   const deps = { config: loadConfig({ QP_ENV: 'test' }), verifier, memberships, requests: repo,
     queue, admission: new AdmissionControl(clock), metrics: new MetricsService(repo, clock),
-    rateLimiter: new MemoryRateLimiter(clock, 1), logger: false };
+    rateLimiter: new MemoryRateLimiter(clock, 1), logger: false, ...(quota ? { quota } : {}), ...(submission ? { submission } : {}) };
   const app = buildApp(deps);
   return { app, deps, repo, store, member, queue, clock, tick: (ms: number) => { now += ms; } };
 }
@@ -107,6 +107,75 @@ describe('API boundary', () => {
     expect(response.statusCode).toBe(503);
     expect(response.json().code).toBe('QUOTA_UNAVAILABLE');
     expect(repo.submit).not.toHaveBeenCalled();
+    await app.close();
+  });
+  it('returns consistent Retry-After headers and bodies for disabled Redis quotas', async () => {
+    const clock = { now: () => 1000 };
+    const quota = new RedisQuotaStore(new ManagedRedis(undefined, clock), clock);
+    const { app, store, repo } = fixture(quota);
+    store.tenant.mockResolvedValue({ ...tenant, quotaMode: 'enforced' });
+    const response = await app.inject({ method: 'POST', url: '/api/v1/requests', headers, payload });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ code: 'QUOTA_UNAVAILABLE', retryAfterSeconds: 30 });
+    expect(Number(response.headers['retry-after'])).toBe(response.json().retryAfterSeconds);
+    expect(repo.submit).not.toHaveBeenCalled();
+    await app.close();
+  });
+  it('returns consistent 429 quota and degraded burst Retry-After responses', async () => {
+    const quota = { consume: vi.fn(async () => { throw new ApiError('QUOTA_EXCEEDED', 123); }) };
+    const { app, deps, store, repo, clock } = fixture(quota);
+    store.tenant.mockResolvedValue({ ...tenant, quotaMode: 'enforced' });
+    const denied = await app.inject({ method: 'POST', url: '/api/v1/requests', headers, payload });
+    expect(denied.statusCode).toBe(429);
+    expect(denied.json()).toMatchObject({ code: 'QUOTA_EXCEEDED', retryAfterSeconds: 123 });
+    expect(Number(denied.headers['retry-after'])).toBe(denied.json().retryAfterSeconds);
+    const limiter = new RedisRateLimiter(new ManagedRedis(undefined, clock), clock, 5, { warn: vi.fn() });
+    vi.spyOn(deps.rateLimiter, 'consume').mockImplementation((key, limit) => limiter.consume(key, limit));
+    // The tenant has 1000/min, so the degraded per-instance allowance is 200.
+    for (let i = 0; i < 200; i++) await limiter.consume('["sandbox","alice"]', 1000);
+    const burst = await app.inject({ method: 'POST', url: '/api/v1/requests', headers, payload });
+    expect(burst.statusCode).toBe(429);
+    expect(burst.json()).toMatchObject({ code: 'RATE_LIMITED', retryAfterSeconds: 59 });
+    expect(Number(burst.headers['retry-after'])).toBe(burst.json().retryAfterSeconds);
+    expect(repo.submit).not.toHaveBeenCalled();
+    await app.close();
+  });
+  it('leaves quotaMode=none tenants unaffected by unavailable quotas', async () => {
+    const quota = { consume: vi.fn(async () => { throw new ApiError('QUOTA_UNAVAILABLE', 30); }) };
+    const { app } = fixture(quota);
+    expect((await app.inject({ method: 'POST', url: '/api/v1/requests', headers, payload })).statusCode).toBe(202);
+    expect(quota.consume).not.toHaveBeenCalled();
+    await app.close();
+  });
+  it('does not consume quota when admission rejects and releases admission after quota failures', async () => {
+    const quota = { consume: vi.fn(async () => { throw new ApiError('QUOTA_UNAVAILABLE', 30); }) };
+    const { app, deps, store } = fixture(quota);
+    store.tenant.mockResolvedValue({ ...tenant, quotaMode: 'enforced' });
+    const release = vi.fn();
+    vi.spyOn(deps.admission, 'acquire').mockRejectedValueOnce(new ApiError('OVERLOADED', 1)).mockResolvedValue(release);
+    await app.inject({ method: 'POST', url: '/api/v1/requests', headers, payload });
+    expect(quota.consume).not.toHaveBeenCalled();
+    await app.inject({ method: 'POST', url: '/api/v1/requests', headers, payload });
+    expect(quota.consume).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+    await app.close();
+  });
+  it('keeps admission ahead of the quota-aware adapter for both new submissions and replays', async () => {
+    const submit = vi.fn(async () => ({ requestId: randomUUID(), replayed: true }));
+    const { app, deps, repo, queue, store } = fixture(undefined, { submit });
+    store.tenant.mockResolvedValue({ ...tenant, quotaMode: 'enforced' });
+    const release = vi.fn();
+    vi.spyOn(deps.admission, 'acquire').mockRejectedValueOnce(new ApiError('OVERLOADED', 1)).mockResolvedValue(release);
+    const overloaded = await app.inject({ method: 'POST', url: '/api/v1/requests', headers, payload });
+    expect(overloaded.statusCode).toBe(503);
+    expect(submit).not.toHaveBeenCalled();
+    const replay = await app.inject({ method: 'POST', url: '/api/v1/requests', headers, payload });
+    expect(replay.statusCode).toBe(202);
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+    expect(submit).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+    expect(repo.submit).not.toHaveBeenCalled();
+    expect(queue.enqueue).not.toHaveBeenCalled();
     await app.close();
   });
   it('rejects bootstrap role input without a write', async () => {

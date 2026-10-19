@@ -3,6 +3,7 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
+    // Includes services.test.ts and the required B5 real-Redis Lua suite (redis.test.ts).
     include: ['tests/integration/**/*.test.ts', 'apps/api/test/integration/**/*.test.ts', 'apps/worker/test/integration/**/*.test.ts'],
     fileParallelism: false,
     testTimeout: 15_000,

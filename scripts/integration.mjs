@@ -5,10 +5,7 @@ import { spawnSync } from 'node:child_process';
 const result = spawnSync(process.execPath, [
   'node_modules/firebase-tools/lib/bin/firebase.js',
   'emulators:exec', '--project', 'demo-queuepilot', '--only', 'auth,firestore',
-  'node node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts'
-  + ' && node node_modules/vitest/vitest.mjs run --config apps/web/vitest.smoke.config.ts'
-  // Worker smoke uses the same emulator lifetime and shuts down its own child over IPC.
-  + ' && node apps/worker/test/build-smoke.mjs',
+  'node scripts/integration-suites.mjs',
 ], {
   stdio: 'inherit',
   env: { ...process.env, DEBUG: '', GCLOUD_PROJECT: 'demo-queuepilot' },

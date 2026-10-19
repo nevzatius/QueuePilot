@@ -6,9 +6,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { CreateRequestResponseSchema, ListRequestsResponseSchema, MetricsResponseSchema, ProblemDetailsSchema, RequestDetailSchema } from '@queuepilot/contracts';
 import {
   AdmissionControl, FirebaseTokenVerifier, FirestoreMembershipStore, FirestoreRequestRepository,
-  loadConfig, MembershipService, MemoryRateLimiter, MetricsService,
+  loadConfig, MembershipService, MemoryRateLimiter, MetricsService, FirestoreQuotaSubmission, ApiError,
 } from '@queuepilot/core';
-import type { QueuePort, Tenant } from '@queuepilot/core';
+import type { QueuePort, Tenant, ReservableQuota } from '@queuepilot/core';
 import { buildApp } from '../../src/app.js';
 
 // No cloud credentials or production project can be used by this suite.
@@ -48,7 +48,7 @@ const headers = (user: typeof alice, key = randomUUID()) => ({ authorization: `B
 async function membership(user: typeof alice, selectedTenant: string, role = 'member') {
   await db.doc(`memberships/${user.uid}`).set({ tenantId: selectedTenant, role, status: 'active', createdBy: 'operator', updatedAt: Timestamp.fromMillis(now), schemaVersion: 1 });
 }
-function createApp() {
+function createApp(quota?: ReservableQuota) {
   const repo = new FirestoreRequestRepository(db, clock);
   const queue = { enqueue: vi.fn<QueuePort['enqueue']>(async () => {}) };
   const app = buildApp({
@@ -56,6 +56,7 @@ function createApp() {
     memberships: new MembershipService(new FirestoreMembershipStore(db), clock), requests: repo,
     admission: new AdmissionControl(clock, 1000, 32), metrics: new MetricsService(repo, clock),
     rateLimiter: new MemoryRateLimiter(clock, 1), bootstrapLimiter: new MemoryRateLimiter(clock, 1), queue, logger: false,
+    ...(quota ? { submission: new FirestoreQuotaSubmission(db, clock, quota, { warn: () => {} }) } : {}),
   });
   apps.push(app);
   return { app, queue, repo };
@@ -68,6 +69,52 @@ beforeAll(async () => {
   await Promise.all([db.doc(`tenants/${tenantId}`).set(tenant), db.doc(`tenants/${otherTenantId}`).set(tenant), db.doc('tenants/sandbox').set(tenant)]);
   [alice, bob, admin, outsider] = await Promise.all([identity(), identity(), identity(), identity()]);
   await Promise.all([membership(alice, tenantId), membership(bob, tenantId), membership(admin, tenantId, 'admin'), membership(outsider, otherTenantId, 'admin')]);
+});
+
+describe('B5 quota-aware acceptance with real Firestore transactions', () => {
+  async function quotaIdentity() {
+    const user = await identity();
+    const id = `quota-${randomUUID().slice(0, 8)}`;
+    await db.doc(`tenants/${id}`).set({ ...tenant, quotaMode: 'enforced' });
+    await membership(user, id);
+    return { user, id };
+  }
+  it('replays from Firestore while quotas are unavailable and still fails new submissions closed', async () => {
+    const { user, id } = await quotaIdentity();
+    const reserve = vi.fn(async () => ({ cancel: async () => {} }));
+    const { app, queue } = createApp({ reserve });
+    const key = randomUUID();
+    const first = await submit(app, user, key);
+    expect(first.statusCode).toBe(202);
+    reserve.mockRejectedValue(new ApiError('QUOTA_UNAVAILABLE', 30));
+    const replay = await submit(app, user, key);
+    expect(replay.statusCode).toBe(202);
+    expect(replay.json()).toEqual(first.json());
+    expect(replay.headers['idempotent-replayed']).toBe('true');
+    expect(reserve).toHaveBeenCalledOnce();
+    const failed = await submit(app, user);
+    expect(failed.statusCode).toBe(503);
+    expect(failed.json()).toMatchObject({ code: 'QUOTA_UNAVAILABLE', retryAfterSeconds: 30 });
+    expect(Number(failed.headers['retry-after'])).toBe(failed.json().retryAfterSeconds);
+    expect((await db.collection('requests').where('tenantId', '==', id).count().get()).data().count).toBe(1);
+    expect(queue.enqueue).toHaveBeenCalledOnce();
+  });
+  it('concurrent duplicate submissions leave one accepted request and one net quota charge', async () => {
+    const { user, id } = await quotaIdentity();
+    let charged = 0;
+    const reserve = vi.fn(async () => {
+      charged++;
+      let released = false;
+      return { cancel: async () => { if (!released) { charged--; released = true; } } };
+    });
+    const { app } = createApp({ reserve });
+    const key = randomUUID();
+    const results = await Promise.all(Array.from({ length: 6 }, () => submit(app, user, key)));
+    expect(results.every((response) => response.statusCode === 202)).toBe(true);
+    expect(new Set(results.map((response) => response.json().requestId)).size).toBe(1);
+    expect(charged).toBe(1);
+    expect((await db.collection('requests').where('tenantId', '==', id).count().get()).data().count).toBe(1);
+  });
 });
 afterAll(async () => {
   await Promise.all(apps.map((app) => app.close()));

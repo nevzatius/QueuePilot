@@ -4,6 +4,6 @@
     "rootDir": ".",
     "outDir": "dist/tooling-types"
   },
-  "include": ["vitest*.ts", "tests/**/*.ts"],
+  "include": ["vitest*.ts", "tests/**/*.ts", "packages/core/test/**/*.ts"],
   "references": [{ "path": "./packages/core" }]
 }
