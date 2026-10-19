@@ -1,4 +1,4 @@
-/* global fetch, URLSearchParams */
+/* global fetch, URLSearchParams, setTimeout */
 // Local E2E driver: real built API + real built worker (separate processes) + Auth/Firestore emulators.
 // Run after both servers are up. Prints a PASS/FAIL line per check; exit code 1 on any failure.
 import { randomUUID } from 'node:crypto';
