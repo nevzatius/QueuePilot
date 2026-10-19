@@ -56,6 +56,12 @@ importers:
 
   packages/core: {}
 
+  packages/domain:
+    dependencies:
+      '@queuepilot/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
 packages:
 
   '@apidevtools/json-schema-ref-parser@9.1.2':
