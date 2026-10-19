@@ -59,7 +59,7 @@ export function spikeSpecification(config) {
   result.push({ stage: 'iam', id: 'spike-hosting-public', host: 'run', kind: 'iam', path: hosting.path,
     body: { role: 'roles/run.invoker', members: ['allUsers'] } });
   const scheduler = structuredClone(resources.find((r) => r.stage === 'scheduler'));
-  Object.assign(scheduler, { id: 'qp-spike-scheduler', path: `v1/${location}/jobs/qp-spike-scheduler` });
+  Object.assign(scheduler, { id: 'qp-spike-scheduler', path: `v1/${location}/jobs/qp-spike-scheduler`, targetService: worker.path });
   scheduler.body.name = `${location}/jobs/qp-spike-scheduler`;
   scheduler.body.httpTarget.uri = `${origin}/probe/success/spike-scheduler`;
   scheduler.body.httpTarget.oidcToken = { serviceAccountEmail: email('qp-spike-scheduler'), audience: origin };
@@ -72,20 +72,26 @@ if (process.argv[1]?.replaceAll('\\', '/').endsWith('/scripts/spike/setup.mjs'))
     const { values } = parseArgs({ options: {
       config: { type: 'string', default: 'infra/config.example.json' }, stage: { type: 'string', default: 'all' },
       apply: { type: 'boolean', default: false }, 'approve-project': { type: 'string' },
+      'approve-spike-worker-image': { type: 'string' },
     } });
     const config = JSON.parse(readFileSync(values.config, 'utf8'));
-    validateConfig(config, values.apply, values.apply && values.stage === 'deploy');
+    validateConfig(config, values.apply, values.apply && (values.stage === 'deploy' || Boolean(values['approve-spike-worker-image'])));
     const allowed = ['identities', 'queues', 'access', 'deploy', 'iam', 'scheduler'];
     if (values.stage !== 'all' && !allowed.includes(values.stage)) throw new Error('Unknown spike stage');
     const resources = spikeSpecification(config).filter((r) => values.stage === 'all' || r.stage === values.stage);
     if (!values.apply) console.log(JSON.stringify({ mode: 'OFFLINE PLAN', resources }, null, 2));
     else {
       if (values.stage === 'all' || values['approve-project'] !== config.projectId) throw new Error('One stage and explicit demo project approval are required');
+      if (values['approve-spike-worker-image'] && values['approve-spike-worker-image'] !== config.workerImage) {
+        throw new Error('Spike deployment approval must match the configured pinned worker image');
+      }
       const client = cloudClient(accessToken());
       const project = await client('cloudresourcemanager', `v1/projects/${config.projectId}`);
       if (project.projectNumber !== config.projectNumber || project.lifecycleState !== 'ACTIVE'
         || project.labels?.['queuepilot-environment'] !== 'demo') throw new Error('Demo project identity mismatch');
-      for (const resource of resources) console.log(`${resource.stage}/${resource.id}: ${await reconcile(client, resource)}`);
+      for (const resource of resources) console.log(`${resource.stage}/${resource.id}: ${await reconcile(client, resource, {
+        schedulerImage: values['approve-spike-worker-image'],
+      })}`);
     }
   } catch (error) { console.error(error instanceof Error ? error.message : 'Setup failed'); process.exitCode = 1; }
 }

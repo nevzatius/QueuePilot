@@ -127,23 +127,28 @@ test('public worker policy blocks IAM changes', async () => {
 
 test('queue routing overrides cannot silently replace per-task OIDC', async () => {
   const r = resources.find((r) => r.stage === 'queue');
-  await assert.rejects(() => reconcile(async () => ({ ...r.body, httpTarget: { uriOverride: { host: 'unexpected.example' } } }), r), /routing\/authentication overrides/);
+  await assert.rejects(() => reconcile(async () => ({ ...r.body, state: 'PAUSED', httpTarget: { uriOverride: { host: 'unexpected.example' } } }), r), /routing\/authentication overrides/);
 });
 
 test('resource create, pause and repeat converge without extra mutations', async () => {
-  for (const resource of resources.filter((r) => ['queue', 'deploy', 'scheduler'].includes(r.stage))) {
+  const approvedConfig = { ...config, workerImage: `europe-west1-docker.pkg.dev/${config.projectId}/queuepilot/worker@sha256:${'a'.repeat(64)}` };
+  for (const resource of specification(approvedConfig).filter((r) => ['queue', 'deploy', 'scheduler'].includes(r.stage))) {
     let state = null;
     const writes = [];
     const client = async (_host, path, method = 'GET', body) => {
+      if (resource.targetService === path) return { terminalCondition: { state: 'CONDITION_SUCCEEDED' },
+        latestReadyRevision: 'ready', latestCreatedRevision: 'ready', template: { containers: [{ image: approvedConfig.workerImage }] } };
       if (method === 'GET') { if (!state) throw new CloudError(404, 'NOT_FOUND'); return state; }
       writes.push({ path, method });
-      if (!path.endsWith(':pause')) state = { ...body, outputOnly: 'ignored' };
+      if (path.endsWith(':pause')) state.state = 'PAUSED';
+      else state = { ...body, state: resource.host === 'cloudtasks' ? 'RUNNING' : 'ENABLED', outputOnly: 'ignored' };
       return {};
     };
-    assert.equal(await reconcile(client, resource), 'CREATED');
+    const pausable = ['cloudtasks', 'cloudscheduler'].includes(resource.host);
+    assert.equal(await reconcile(client, resource, { schedulerImage: approvedConfig.workerImage }), pausable ? 'CREATED (state=PAUSED)' : 'CREATED');
     const count = writes.length;
     assert.equal(count, ['cloudtasks', 'cloudscheduler'].includes(resource.host) ? 2 : 1);
-    assert.equal(await reconcile(client, resource), 'NOOP');
+    assert.equal(await reconcile(client, resource), pausable ? 'NOOP (state=PAUSED)' : 'NOOP');
     assert.equal(writes.length, count);
   }
   assert.ok(matches({ values: [{ name: 'b' }, { name: 'a' }] }, { values: [{ name: 'a' }, { name: 'b' }] }));

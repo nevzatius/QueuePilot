@@ -34,7 +34,7 @@ export function specification(c) {
   const workerUrl = `https://qp-worker-${c.projectNumber}.${c.region}.run.app`;
   const resources = [];
   const add = (stage, id, host, path, parent, body, options = {}) => resources.push({ stage, id, host, path, parent, body, ...options });
-  for (const api of ['run', 'cloudtasks', 'cloudscheduler', 'firestore', 'firebaserules', 'secretmanager', 'iam', 'iamcredentials', 'artifactregistry']) {
+  for (const api of ['cloudresourcemanager', 'run', 'cloudtasks', 'cloudscheduler', 'firestore', 'firebaserules', 'secretmanager', 'iam', 'iamcredentials', 'artifactregistry']) {
     add('bootstrap', api, 'serviceusage', `v1/projects/${c.projectNumber}/services/${api}.googleapis.com`, null, {}, { kind: 'api' });
   }
   for (const api of ['cloudtasks', 'cloudscheduler']) {
@@ -95,10 +95,10 @@ export function specification(c) {
         }],
       } });
   }
-  const grant = (id, host, path, role, members, project = false) => add(host === 'run' ? 'iam' : 'access', id, host, path, null,
-    { role, members }, { kind: 'iam', project });
+  const grant = (id, host, path, role, members) => add(host === 'run' ? 'iam' : 'access', id, host, path, null,
+    { role, members }, { kind: 'iam' });
   for (const name of ['qp-api-sa', 'qp-worker-sa']) {
-    grant(`${name}-data`, 'cloudresourcemanager', `v1/${p}`, 'roles/datastore.user', [`serviceAccount:${sa(name)}`], true);
+    grant(`${name}-data`, 'cloudresourcemanager', `v1/${p}`, 'roles/datastore.user', [`serviceAccount:${sa(name)}`]);
     grant(`${name}-actas`, 'iam', `v1/${p}/serviceAccounts/${sa('qp-tasks-invoker-sa')}`, 'roles/iam.serviceAccountUser', [`serviceAccount:${sa(name)}`]);
     grant(`${name}-redis`, 'secretmanager', `v1/${p}/secrets/redis-url`, 'roles/secretmanager.secretAccessor', [`serviceAccount:${sa(name)}`]);
     grant(`${name}-queue`, 'cloudtasks', `v2/${location}/queues/qp-process`, `${p}/roles/${name === 'qp-api-sa' ? 'qpEnqueuer' : 'qpReconciler'}`, [`serviceAccount:${sa(name)}`]);
@@ -109,7 +109,7 @@ export function specification(c) {
     ['scheduler', 'gcp-sa-cloudscheduler', 'roles/cloudscheduler.serviceAgent'],
   ]) {
     grant(`${service}-agent`, 'cloudresourcemanager', `v1/${p}`, role,
-      [`serviceAccount:service-${c.projectNumber}@${suffix}.iam.gserviceaccount.com`], true);
+      [`serviceAccount:service-${c.projectNumber}@${suffix}.iam.gserviceaccount.com`]);
   }
   grant('tasks-agent-actas', 'iam', `v1/${p}/serviceAccounts/${sa('qp-tasks-invoker-sa')}`,
     'roles/iam.serviceAccountUser', [`serviceAccount:service-${c.projectNumber}@gcp-sa-cloudtasks.iam.gserviceaccount.com`]);
@@ -118,10 +118,10 @@ export function specification(c) {
   grant('api-public', 'run', `v2/${location}/services/qp-api`, 'roles/run.invoker', ['allUsers']);
   add('scheduler', 'qp-reconcile', 'cloudscheduler', `v1/${location}/jobs/qp-reconcile`, `v1/${location}/jobs`, {
     name: `${location}/jobs/qp-reconcile`, schedule: '* * * * *', timeZone: 'Etc/UTC', attemptDeadline: '60s',
-    retryConfig: { retryCount: 0, maxRetryDuration: '0s', minBackoffDuration: '5s', maxBackoffDuration: '60s', maxDoublings: 3 },
+    retryConfig: { retryCount: 0, maxRetryDuration: '0s' },
     httpTarget: { uri: `${workerUrl}/internal/reconcile`, httpMethod: 'POST',
       headers: { 'Content-Type': 'application/json' }, body: 'e30=',
       oidcToken: { serviceAccountEmail: sa('qp-scheduler-sa'), audience: workerUrl } },
-  });
+  }, { targetService: `v2/${location}/services/qp-worker`, targetImage: c.workerImage });
   return resources;
 }
