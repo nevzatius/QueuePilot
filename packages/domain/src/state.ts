@@ -23,17 +23,16 @@ export interface ErrorInfo {
  *
  * A retry budget epoch starts at S1 and, in P1 only, again at each admin retry (S12). The MVP has exactly
  * one epoch, so there `maxAttempts = MAX_ATTEMPTS` and `maxSeq = MAX_DISPATCH` for the whole lifetime.
- * - `processing.maxAttempts` / `dispatch.maxSeq` are absolute ceilings, not remaining amounts. S12 raises
- *   them to `attempts + MAX_ATTEMPTS` and `newSeq + MAX_DISPATCH - 1`, so every epoch gets exactly
- *   MAX_ATTEMPTS business-logic starts (I5 per epoch) and MAX_DISPATCH generations.
+ * - `processing.maxAttempts` is an absolute ceiling (I5). `dispatch.maxSeq` is the last *prompt* dispatch
+ *   generation, not a ceiling: later orders are attention orders (S10), slower but never terminal.
+ *   S12 raises both to `attempts + MAX_ATTEMPTS` and `newSeq + MAX_DISPATCH - 1`.
  * - `attempts`, `seq`, `deliveredSeq` and `duplicateDeliveries` never decrease, not even across S12.
- *   `checks` is a backoff counter and resets on every new lease and every new generation.
- * - Event IDs are `{type}-a{attempts}` or `{type}-s{seq}`. Because the counters are monotonic and every
- *   attempt-scoped terminal event after S12 needs a new lease (attempts++), and every seq-scoped one a new
- *   generation (seq++), an ID is never reused after an admin retry.
- * - S12 is the only exit from a terminal status (FAILED only; COMPLETED is always absorbing, I3), and the
- *   only `seq` increment without proven absence (I7): the old generation is fenced by STALE_DISPATCH
- *   instead. Both exceptions need an ADR before S12 is enabled.
+ *   `checks` is a backoff counter and resets on every new lease and every new dispatch order.
+ * - Event IDs are `{type}-a{attempts}` or `{type}-s{seq}`. Because the counters are monotonic, every
+ *   FAILED after S12 needs a new lease (attempts++) and every REDISPATCHED a new order (seq++), so an ID is
+ *   never reused after an admin retry.
+ * - S12 is the only exit from a terminal status (FAILED only; COMPLETED is always absorbing, I3). It needs
+ *   an ADR before it is enabled.
  */
 
 export interface ProcessingState {
@@ -47,14 +46,24 @@ export interface ProcessingState {
 }
 
 export interface DispatchState {
-  /** Current task generation; the task name is `r-{requestId}-{seq}`. Increments only on proven absence (I7). */
+  /**
+   * Latest dispatch order; its task name is `r-{requestId}-{seq}`. Incremented once per order, in the
+   * transaction that places it and before any `createTask`, so every name has exactly one creator (ADR-017).
+   */
   readonly seq: number;
-  /** Highest `seq` whose delivery acquired a lease. `deliveredSeq >= seq` proves the current task was delivered. */
+  /** Highest `seq` whose delivery acquired a lease. Diagnostics only; no decision depends on it. */
   readonly deliveredSeq: number;
-  /** Consecutive EXISTS probes for the current task; drives the step-4 backoff. */
+  /** Consecutive EXISTS probes for the latest order; drives the wait backoff. */
   readonly checks: number;
-  /** Dispatch budget ceiling: `seq` may grow up to this value. MAX_DISPATCH at S1; only S12 raises it. */
+  /** Last prompt dispatch generation. MAX_DISPATCH at S1; only S12 raises it. Orders past it are S10. */
   readonly maxSeq: number;
+  /**
+   * Set by the first attention order (S10), cleared by the next worker write or terminal transition.
+   * Non-null means "prompt dispatch budget spent and no delivery since": the request needs operator
+   * attention but is still recoverable. It is never a business failure.
+   */
+  readonly attentionSince: EpochMs | null;
+  /** Last `createTask` error of the latest order, or null once it succeeded. Diagnostics only. */
   readonly lastError: ErrorInfo | null;
 }
 
@@ -92,13 +101,17 @@ export function isAttemptBudgetExhausted(state: RequestState): boolean {
   return state.processing.attempts >= state.processing.maxAttempts;
 }
 
+/** The prompt dispatch budget is spent: the next order is an attention order (S10). */
 export function isDispatchBudgetExhausted(state: RequestState): boolean {
   return state.dispatch.seq >= state.dispatch.maxSeq;
 }
 
-/** The current task was delivered at least once (a lease was acquired for `seq`). */
-export function isCurrentTaskDelivered(state: RequestState): boolean {
-  return state.dispatch.deliveredSeq >= state.dispatch.seq;
+/**
+ * Prompt dispatch budget spent and no delivery since (S10). Recoverable: the reconciler keeps re-dispatching
+ * at the attention cadence and any delivery clears it. Exposed to operators; never a terminal failure.
+ */
+export function needsAttention(state: RequestState): boolean {
+  return !isTerminal(state) && state.dispatch.attentionSince !== null;
 }
 
 /** A request is stuck when its watchdog is more than 15 minutes overdue (ARCHITECTURE §7). */
@@ -126,9 +139,12 @@ export function stateViolations(state: RequestState): string[] {
   if (state.status !== 'PROCESSING' && p.lease !== null) v.push('lease only while PROCESSING');
   if (state.status === 'PROCESSING' && p.lease === null) v.push('PROCESSING requires a lease');
   if (!(p.attempts >= 0 && p.attempts <= p.maxAttempts)) v.push('0 <= attempts <= maxAttempts');
-  if (!(d.seq >= 1 && d.seq <= d.maxSeq)) v.push('1 <= seq <= maxSeq');
+  if (!(d.seq >= 1 && d.maxSeq >= 1)) v.push('seq >= 1 and maxSeq >= 1');
   if (!(d.deliveredSeq >= 0 && d.deliveredSeq <= d.seq)) v.push('0 <= deliveredSeq <= seq');
   if (d.checks < 0 || p.duplicateDeliveries < 0) v.push('counters are non-negative');
+  if (d.attentionSince !== null && (terminal || d.seq <= d.maxSeq)) {
+    v.push('attentionSince only on non-terminal requests past maxSeq');
+  }
   return v;
 }
 
@@ -138,7 +154,8 @@ export function stateViolations(state: RequestState): string[] {
 
 /**
  * S1-S12 from the state machine table, plus `WATCHDOG`: a scheduling-only write (watchdog, checks,
- * dispatch error) that never changes `status`.
+ * dispatch error) that never changes `status`. S9 and S10 are dispatch orders (prompt and attention); no
+ * dispatch outcome ever leads to a terminal status (ADR-017).
  */
 export type TransitionId =
   | 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6' | 'S7' | 'S8' | 'S9' | 'S10' | 'S11' | 'S12'
@@ -163,7 +180,7 @@ export const TRANSITIONS: Readonly<Record<TransitionId, TransitionRule>> = Objec
   S7: { from: ['PROCESSING'], to: ['FAILED'] },
   S8: { from: NON_TERMINAL, to: ['FAILED'] },
   S9: { from: NON_TERMINAL, to: 'UNCHANGED' },
-  S10: { from: NON_TERMINAL, to: ['FAILED'] },
+  S10: { from: NON_TERMINAL, to: 'UNCHANGED' },
   S11: { from: TERMINAL, to: 'UNCHANGED' },
   S12: { from: ['FAILED'], to: ['ACCEPTED'] },
   WATCHDOG: { from: NON_TERMINAL, to: 'UNCHANGED' },
@@ -262,22 +279,31 @@ export function stateWrite(
   return { transition, next, events };
 }
 
-/** FAILED with the given reason: lease and watchdog cleared, `completedAt` set. */
-export function failedState(state: RequestState, reason: FailureReason, now: EpochMs): RequestState {
+/**
+ * Failures the domain can produce. `DISPATCH_EXHAUSTED` stays in the public `FailureReason` enum for
+ * compatibility, but no decision produces it any more: dispatch problems end in attention (S10, ADR-017).
+ */
+export type BusinessFailureReason = Exclude<FailureReason, 'DISPATCH_EXHAUSTED'>;
+
+/** FAILED with the given reason: lease, watchdog and attention cleared, `completedAt` set. */
+export function failedState(state: RequestState, reason: BusinessFailureReason, now: EpochMs): RequestState {
   return {
     ...state,
     status: 'FAILED',
     statusReason: reason,
     processing: { ...state.processing, lease: null },
+    dispatch: { ...state.dispatch, attentionSince: null },
     watchdogAt: null,
     completedAt: now,
   };
 }
 
-/** Event for a FAILED transition. Dispatch exhaustion is scoped to the generation, the rest to the attempt. */
-export function failedEvent(state: RequestState, reason: FailureReason, actor: EventActor, now: EpochMs): DomainEvent {
-  return makeEvent('FAILED', actor, state, now, {
-    details: { reason },
-    scope: reason === 'DISPATCH_EXHAUSTED' ? 'seq' : 'attempt',
-  });
+/** Event for a FAILED transition, scoped to the attempt (`FAILED-a{attempts}`). */
+export function failedEvent(
+  state: RequestState,
+  reason: BusinessFailureReason,
+  actor: EventActor,
+  now: EpochMs,
+): DomainEvent {
+  return makeEvent('FAILED', actor, state, now, { details: { reason }, scope: 'attempt' });
 }

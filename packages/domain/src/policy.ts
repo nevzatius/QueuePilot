@@ -2,7 +2,10 @@ import { HOUR_MS, MINUTE_MS, SECOND_MS } from './time.js';
 
 /** Business-logic starts per retry budget (I5). Counted in Firestore, never from queue headers. */
 export const MAX_ATTEMPTS = 5;
-/** Dispatch generations (`dispatch.seq` values) per retry budget. */
+/**
+ * Prompt dispatch generations (`dispatch.seq` values) per retry budget. Orders beyond it are attention orders
+ * (S10): the request stays non-terminal and is re-dispatched at most every `ATTENTION_REDISPATCH_MS`.
+ */
 export const MAX_DISPATCH = 3;
 export const LEASE_MS = 60 * SECOND_MS;
 /** Upper bound for one triage run. The worker aborts processing after this. */
@@ -12,10 +15,10 @@ export const PROCESSING_TIMEOUT_MS = 20 * SECOND_MS;
 export const INITIAL_WATCHDOG_MS = 60 * SECOND_MS;
 /** Grace after lease expiry before the reconciler looks at a PROCESSING request (S2, step 2). */
 export const LEASE_GRACE_MS = 30 * SECOND_MS;
-/** Watchdog after a transient error (S5) and after a successful enqueue. */
+/** Watchdog after a transient error (S5) and after a prompt dispatch order (S9). */
 export const RETRY_WATCHDOG_MS = 5 * MINUTE_MS;
-/** Watchdog after an inconclusive probe (ADR-011), a failed createTask, or while a createTask is claimed. */
-export const SHORT_RECHECK_MS = 1 * MINUTE_MS;
+/** Watchdog after an attention order (S10): the slowest automatic re-dispatch cadence. */
+export const ATTENTION_REDISPATCH_MS = 30 * MINUTE_MS;
 /** Cap for the step-4 backoff `min(2^checks min, 15 min)`. */
 export const PROBE_BACKOFF_CAP_MS = 15 * MINUTE_MS;
 

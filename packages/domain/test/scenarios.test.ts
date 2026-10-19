@@ -1,15 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ATTENTION_REDISPATCH_MS,
   LEASE_MS,
   MAX_ATTEMPTS,
   MAX_DISPATCH,
+  RETRY_WATCHDOG_MS,
   decideAdminRetry,
   decideCompletion,
   decideDelivery,
   decideEnqueueResult,
   decideReconcile,
-  decideVerifyResult,
   isStuck,
+  needsAttention,
   planAcceptance,
   type EnqueueOrder,
   type EnqueueOutcome,
@@ -22,9 +24,10 @@ import {
 import { MIN, T0, apply } from './fixtures.js';
 
 /**
- * Domain-level replays of the B4 failure catalogue (docs/TASKS.md, T1-T13). Each step feeds the state
- * produced by the previous decision into the next one, exactly as serialised Firestore transactions
- * would. Queue behaviour is described by the inputs (probe results, createTask outcomes, deliveries).
+ * Domain-level replays of the B4 failure catalogue (docs/TASKS.md, T1-T16, as amended by ADR-017). Each
+ * step feeds the state produced by the previous decision into the next one, exactly as serialised Firestore
+ * transactions would. Queue behaviour is described by the inputs (probe results, createTask outcomes,
+ * deliveries).
  */
 class Sim {
   state: RequestState;
@@ -73,12 +76,6 @@ class Sim {
     this.commit(d.write);
     return d;
   }
-  /** The probe that follows a VERIFY_TASK. */
-  verified(order: EnqueueOrder, result: ProbeResult) {
-    const d = decideVerifyResult(this.state, order, { seq: order.seq, result }, this.now);
-    this.commit(d.write);
-    return d;
-  }
 }
 
 const OK: ProcessingOutcome = {
@@ -94,13 +91,14 @@ function acquire(sim: Sim, seq?: number): string {
 }
 
 describe('failure catalogue at the decision level', () => {
-  it('T1: createTask failed at the API → reconciler recreates the same seq → COMPLETED, seq=1', () => {
+  it('T1: createTask failed at the API → reconciler places a new order → COMPLETED, seq=2', () => {
     const sim = new Sim().at(T0 + MIN);
     const d = sim.reconcile('NOT_FOUND');
-    if (d.kind !== 'RECREATE_TASK') throw new Error(d.kind);
-    expect(sim.enqueued(d.enqueue, { result: 'CREATED' }).kind).toBe('SCHEDULED');
+    if (d.kind !== 'DISPATCH') throw new Error(d.kind);
+    expect(d.enqueue).toEqual({ seq: 2 });
+    expect(sim.enqueued(d.enqueue, { result: 'CREATED' })).toMatchObject({ kind: 'NOOP', reason: 'UNCHANGED' });
     expect(sim.complete(acquire(sim), OK).kind).toBe('COMPLETE');
-    expect(sim.state).toMatchObject({ status: 'COMPLETED', dispatch: { seq: 1 }, processing: { attempts: 1 } });
+    expect(sim.state).toMatchObject({ status: 'COMPLETED', dispatch: { seq: 2 }, processing: { attempts: 1 } });
   });
 
   it('T2: ambiguous createTask → probe EXISTS → wait; one completion, seq=1', () => {
@@ -125,16 +123,11 @@ describe('failure catalogue at the decision level', () => {
     expect(sim.state.dispatch.seq).toBe(1);
   });
 
-  it('T4: pre-lease failures exhaust the task → NOT_FOUND, deliveredSeq=0, tombstone → seq=2, attempts=0', () => {
+  it('T4: pre-lease failures exhaust the task → NOT_FOUND → new order seq=2, attempts=0, no tombstone logic', () => {
     const sim = new Sim().at(T0 + 20 * MIN);
     const d = sim.reconcile('NOT_FOUND');
-    if (d.kind !== 'RECREATE_TASK') throw new Error(d.kind);
-    expect(sim.enqueued(d.enqueue, { result: 'ALREADY_EXISTS' }).kind).toBe('VERIFY_TASK');
-    const t = sim.verified(d.enqueue, 'NOT_FOUND');
-    if (t.kind !== 'REDISPATCH') throw new Error(t.kind);
-    expect(sim.enqueued(t.enqueue, { result: 'CREATED' }).kind).toBe('SCHEDULED');
+    if (d.kind !== 'DISPATCH') throw new Error(d.kind);
     expect(sim.state).toMatchObject({ status: 'ACCEPTED', dispatch: { seq: 2, deliveredSeq: 0 }, processing: { attempts: 0 } });
-    expect(sim.deliver(1).kind).toBe('STALE_DISPATCH');
     expect(sim.complete(acquire(sim, 2), OK).kind).toBe('COMPLETE');
   });
 
@@ -167,15 +160,17 @@ describe('failure catalogue at the decision level', () => {
     expect(sim.deliver().kind).toBe('DUPLICATE_SUPPRESSED');
   });
 
-  it('T9: a stale seq delivery returns 200 without processing', () => {
-    const sim = new Sim();
-    sim.state = { ...sim.state, dispatch: { ...sim.state.dispatch, seq: 2 } };
-    const before = sim.state;
-    expect(sim.deliver(1)).toEqual({ kind: 'STALE_DISPATCH', http: 200, write: null });
-    expect(sim.state).toBe(before);
+  it('T9: an older order\'s task is a valid wake-up: it processes a runnable request, and is absorbed once terminal', () => {
+    const sim = new Sim().at(T0 + MIN);
+    sim.reconcile('NOT_FOUND'); // order seq 2; the API's seq-1 task turns up late
+    const d = sim.deliver(1);
+    if (d.kind !== 'ACQUIRE_LEASE') throw new Error(d.kind);
+    expect(sim.complete(d.lease.id, OK).kind).toBe('COMPLETE');
+    expect(sim.deliver(2)).toMatchObject({ kind: 'DUPLICATE_SUPPRESSED', http: 200 });
+    expect(sim.state).toMatchObject({ status: 'COMPLETED', processing: { attempts: 1 }, dispatch: { seq: 2, deliveredSeq: 1 } });
   });
 
-  it('T11: two concurrent reconcilers increment seq at most once per proven loss', () => {
+  it('T11: two concurrent reconcilers place one order per due watchdog', () => {
     const sim = new Sim();
     sim.complete(acquire(sim), TRANSIENT); // delivered, back in ACCEPTED; then the task is lost
     const due = sim.state.watchdogAt as number;
@@ -183,27 +178,28 @@ describe('failure catalogue at the decision level', () => {
 
     // Both selected the request and both probed NOT_FOUND for seq=1. A commits first.
     const a = decideReconcile(snapshot, { seq: 1, result: 'NOT_FOUND' }, due);
-    if (a.kind !== 'REDISPATCH') throw new Error(a.kind);
+    if (a.kind !== 'DISPATCH') throw new Error(a.kind);
     const afterA = apply(snapshot, a.write);
     // B's transaction re-reads A's commit.
     expect(decideReconcile(afterA, { seq: 1, result: 'NOT_FOUND' }, due).kind).toBe('NOOP');
-    // Even once A's claim is due again, B's probe refers to the old generation.
-    expect(decideReconcile(afterA, { seq: 1, result: 'NOT_FOUND' }, due + 5 * MIN).kind).toBe('PROBE_STALE');
+    // Once A's order is due again, B's probe refers to an older order.
+    expect(decideReconcile(afterA, { seq: 1, result: 'NOT_FOUND' }, due + RETRY_WATCHDOG_MS).kind).toBe('PROBE_STALE');
     expect(afterA.dispatch.seq).toBe(2);
   });
 
-  it('T11: a stalled recreate claimant cannot burn seq after another reconciler recreated the task', () => {
+  it('T11: a stalled reconciler\'s late createTask result cannot touch a newer order', () => {
     const sim = new Sim().at(T0 + MIN);
     const a = sim.reconcile('NOT_FOUND');
-    if (a.kind !== 'RECREATE_TASK') throw new Error(a.kind);
-    // A stalls past its claim. B takes over, recreates the task and records it.
-    sim.at(a.enqueue.claim);
+    if (a.kind !== 'DISPATCH') throw new Error(a.kind);
+    // A stalls past its order. B places the next one and records it.
+    sim.at(sim.state.watchdogAt as number);
     const b = sim.reconcile('NOT_FOUND');
-    if (b.kind !== 'RECREATE_TASK') throw new Error(b.kind);
-    expect(sim.enqueued(b.enqueue, { result: 'CREATED' }).kind).toBe('SCHEDULED');
-    // A's createTask finally returns ALREADY_EXISTS (B's task). Without the claim it would look like a tombstone.
-    expect(sim.enqueued(a.enqueue, { result: 'ALREADY_EXISTS' })).toMatchObject({ kind: 'NOOP', reason: 'CLAIM_LOST' });
-    expect(sim.state.dispatch.seq).toBe(1);
+    if (b.kind !== 'DISPATCH') throw new Error(b.kind);
+    // A's createTask finally answers, in any form. Its own name, its own result: nothing to decide.
+    for (const outcome of [{ result: 'CREATED' }, { result: 'ALREADY_EXISTS' }] as const) {
+      expect(sim.enqueued(a.enqueue, outcome)).toMatchObject({ kind: 'NOOP', reason: 'SUPERSEDED' });
+    }
+    expect(sim.state.dispatch.seq).toBe(3);
   });
 
   it('T12: reconciler off and createTask failed → stays ACCEPTED and stuck, recovered once it runs', () => {
@@ -212,7 +208,7 @@ describe('failure catalogue at the decision level', () => {
     expect(isStuck(sim.state, T0 + 17 * MIN)).toBe(true);
     expect(sim.state.status).toBe('ACCEPTED');
     const d = sim.at(T0 + 17 * MIN).reconcile('NOT_FOUND');
-    if (d.kind !== 'RECREATE_TASK') throw new Error(d.kind);
+    if (d.kind !== 'DISPATCH') throw new Error(d.kind);
     sim.enqueued(d.enqueue, { result: 'CREATED' });
     expect(isStuck(sim.state, sim.now)).toBe(false);
     expect(sim.complete(acquire(sim), OK).kind).toBe('COMPLETE');
@@ -225,35 +221,38 @@ describe('failure catalogue at the decision level', () => {
     expect(sim.state).toMatchObject({ status: 'FAILED', statusReason: 'PERMANENT_ERROR', processing: { attempts: 1 } });
   });
 
-  it('B4 extra: a getTask PERMISSION_DENIED (UNKNOWN) changes no state besides the watchdog (ADR-011)', () => {
+  it('B4 extra: a getTask PERMISSION_DENIED (UNKNOWN) is not evidence; it only allows a safe new order', () => {
     const sim = new Sim();
     sim.complete(acquire(sim), TRANSIENT);
     const before = sim.state;
     const d = sim.at(before.watchdogAt as number).reconcile('UNKNOWN');
-    expect(d.kind).toBe('PROBE_UNKNOWN');
-    expect(sim.state).toEqual({ ...before, watchdogAt: sim.now + MIN });
+    expect(d).toMatchObject({ kind: 'DISPATCH', enqueue: { seq: 2 }, attention: false });
+    expect(sim.state).toMatchObject({ status: 'ACCEPTED', processing: before.processing, dispatch: { seq: 2 } });
   });
 
-  it('T16 (P1): repeated losses end in DISPATCH_EXHAUSTED after MAX_DISPATCH generations', () => {
+  it('T16: repeated purges before delivery end in attention, never DISPATCH_EXHAUSTED; a delivery recovers', () => {
     const sim = new Sim();
-    const outcomes: string[] = [];
-    for (let i = 0; i < 5 && sim.state.status !== 'FAILED'; i++) {
-      sim.complete(acquire(sim), TRANSIENT); // delivered, then the queue purges the task
+    const kinds: string[] = [];
+    for (let i = 0; i < MAX_DISPATCH + 2; i++) {
       const d = sim.at(sim.state.watchdogAt as number).reconcile('NOT_FOUND');
-      outcomes.push(d.kind);
-      if (d.kind === 'REDISPATCH') sim.enqueued(d.enqueue, { result: 'CREATED' });
+      if (d.kind !== 'DISPATCH') throw new Error(d.kind);
+      kinds.push(d.write.transition);
     }
-    expect(outcomes).toEqual(['REDISPATCH', 'REDISPATCH', 'FAIL']);
-    expect(sim.state).toMatchObject({ status: 'FAILED', statusReason: 'DISPATCH_EXHAUSTED', dispatch: { seq: 3 } });
+    expect(kinds).toEqual(['S9', 'S9', 'S10', 'S10', 'S10']);
+    expect(sim.state).toMatchObject({ status: 'ACCEPTED', statusReason: null, processing: { attempts: 0 } });
+    expect(needsAttention(sim.state)).toBe(true);
+    expect(sim.state.watchdogAt).toBe(sim.now + ATTENTION_REDISPATCH_MS);
+    expect(sim.complete(acquire(sim), OK).kind).toBe('COMPLETE');
+    expect(sim.state.dispatch.attentionSince).toBeNull();
   });
 
-  it('S12 (P1): every budget epoch gets MAX_ATTEMPTS starts and MAX_DISPATCH generations; event IDs never repeat', () => {
+  it('S12 (P1): every budget epoch gets MAX_ATTEMPTS starts; old tasks stay valid wake-ups; event IDs never repeat', () => {
     const sim = new Sim();
     const starts = () => sim.events.filter((e) => e.type === 'PROCESSING_STARTED').length;
     const retry = () => {
       const d = sim.adminRetry();
       if (d.kind !== 'RETRY') throw new Error(d.kind);
-      expect(sim.enqueued(d.enqueue, { result: 'CREATED' }).kind).toBe('SCHEDULED');
+      expect(sim.enqueued(d.enqueue, { result: 'CREATED' }).kind).toBe('NOOP');
       return d.enqueue.seq;
     };
 
@@ -261,27 +260,19 @@ describe('failure catalogue at the decision level', () => {
     while (sim.state.status !== 'FAILED') sim.complete(acquire(sim), TRANSIENT);
     expect([starts(), sim.state.statusReason]).toEqual([MAX_ATTEMPTS, 'ATTEMPTS_EXHAUSTED']);
 
-    // Epoch 2: the old generation is fenced, then every generation is lost until DISPATCH_EXHAUSTED.
+    // Epoch 2: the previous order's task arrives first and processes the request: permanent error.
     const firstSeq = retry();
-    expect(sim.deliver(firstSeq - 1).kind).toBe('STALE_DISPATCH');
-    while (sim.state.status !== 'FAILED') {
-      sim.complete(acquire(sim), TRANSIENT);
-      const d = sim.at(sim.state.watchdogAt as number).reconcile('NOT_FOUND');
-      if (d.kind === 'REDISPATCH') sim.enqueued(d.enqueue, { result: 'CREATED' });
-    }
-    expect(sim.state).toMatchObject({ statusReason: 'DISPATCH_EXHAUSTED', dispatch: { seq: firstSeq + MAX_DISPATCH - 1 } });
-    expect(starts()).toBe(MAX_ATTEMPTS + MAX_DISPATCH);
-
-    // Epoch 3: permanent error. Epoch 4: success.
-    retry();
-    sim.complete(acquire(sim), { kind: 'PERMANENT_ERROR', error: { code: 'BAD', message: 'bad' } });
+    sim.complete(acquire(sim, firstSeq - 1), { kind: 'PERMANENT_ERROR', error: { code: 'BAD', message: 'bad' } });
     expect(sim.state.statusReason).toBe('PERMANENT_ERROR');
+
+    // Epoch 3: success.
     retry();
     expect(sim.complete(acquire(sim), OK).kind).toBe('COMPLETE');
 
     const ids = sim.events.map((e) => e.id);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids.filter((id) => id.startsWith('FAILED-'))).toEqual(['FAILED-a5', 'FAILED-s4', 'FAILED-a9']);
-    expect(sim.state).toMatchObject({ status: 'COMPLETED', processing: { attempts: 10, maxAttempts: 14 }, dispatch: { seq: 6, maxSeq: 8 } });
+    expect(ids.filter((id) => id.startsWith('FAILED-'))).toEqual(['FAILED-a5', 'FAILED-a6']);
+    expect(starts()).toBe(MAX_ATTEMPTS + 2);
+    expect(sim.state).toMatchObject({ status: 'COMPLETED', processing: { attempts: 7, maxAttempts: 11 }, dispatch: { seq: 3, maxSeq: 5 } });
   });
 });

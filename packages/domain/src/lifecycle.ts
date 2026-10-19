@@ -20,8 +20,11 @@ export interface Acceptance {
   readonly watchdogShard: number;
   /** Pinned at acceptance; reprocessing always uses this version (I6). */
   readonly rulesVersion: string;
-  /** The API's best-effort `createTask` after the commit. Failures are only logged (ARCHITECTURE §4). */
-  readonly enqueue: { readonly seq: 1 };
+  /**
+   * The API's best-effort `createTask` for `r-{id}-1` after the commit; the API is that name's only creator.
+   * Failures are only logged (ARCHITECTURE §4): the S1 watchdog lets the reconciler place a new order.
+   */
+  readonly enqueue: EnqueueOrder & { readonly seq: 1 };
 }
 
 /**
@@ -39,7 +42,7 @@ export function planAcceptance(input: { requestId: string; payloadFingerprint: s
     status: 'ACCEPTED',
     statusReason: null,
     processing: { attempts: 0, maxAttempts: MAX_ATTEMPTS, lease: null, lastError: null, duplicateDeliveries: 0 },
-    dispatch: { seq: 1, deliveredSeq: 0, checks: 0, maxSeq: MAX_DISPATCH, lastError: null },
+    dispatch: { seq: 1, deliveredSeq: 0, checks: 0, maxSeq: MAX_DISPATCH, attentionSince: null, lastError: null },
     watchdogAt: now + INITIAL_WATCHDOG_MS,
     startedAt: null,
     completedAt: null,
@@ -62,19 +65,16 @@ export type AdminRetryDecision =
   | { readonly kind: 'NOT_FOUND'; readonly write: null }
   /** Only FAILED requests can be retried; COMPLETED stays absorbing. */
   | { readonly kind: 'NOT_RETRYABLE'; readonly write: null }
-  /**
-   * Commit `write`, then `createTask` for `enqueue.seq` and continue with step 3 of the reconciler flow
-   * (`decideEnqueueResult`, then `decideVerifyResult` on ALREADY_EXISTS).
-   */
+  /** Commit `write`, then `createTask` for `enqueue.seq` and continue with step 3 of the reconciler flow. */
   | { readonly kind: 'RETRY'; readonly enqueue: EnqueueOrder; readonly write: StateWrite };
 
 /**
  * S12 (P1, **not an MVP feature**): FAILED → ACCEPTED with a fresh retry budget epoch. No MVP route or
- * adapter calls this; wiring it needs owner approval of P1 and an ADR for its I3 and I7 exceptions (see
- * "Budgets and counters" in `state.ts`). `role` must come from an **uncached** membership read
- * (ADR-010). Counters stay monotonic: the ceilings are raised instead of resetting `attempts` or `seq`,
- * so deterministic event IDs never collide and I5 holds per epoch. `startedAt`, `deliveredSeq` and both
- * `lastError` fields are kept as history.
+ * adapter calls this; wiring it needs owner approval of P1 and an ADR for its I3 exception (see "Budgets
+ * and counters" in `state.ts`). `role` must come from an **uncached** membership read (ADR-010). Counters
+ * stay monotonic: the ceilings are raised instead of resetting `attempts` or `seq`, so deterministic event
+ * IDs never collide and I5 holds per epoch. `startedAt`, `deliveredSeq` and both `lastError` fields are
+ * kept as history. Like every dispatch order, it places a fresh name (`seq++`) that only it creates.
  */
 export function decideAdminRetry(state: RequestState | null, role: Role, now: EpochMs): AdminRetryDecision {
   if (role !== 'admin') return { kind: 'FORBIDDEN', write: null };
@@ -82,16 +82,15 @@ export function decideAdminRetry(state: RequestState | null, role: Role, now: Ep
   if (state.status !== 'FAILED') return { kind: 'NOT_RETRYABLE', write: null };
 
   const seq = state.dispatch.seq + 1;
-  const claim = now + INITIAL_WATCHDOG_MS;
   const next: RequestState = {
     ...state,
     status: 'ACCEPTED',
     statusReason: null,
     processing: { ...state.processing, lease: null, maxAttempts: state.processing.attempts + MAX_ATTEMPTS },
-    dispatch: { ...state.dispatch, seq, checks: 0, maxSeq: seq + MAX_DISPATCH - 1 },
-    watchdogAt: claim,
+    dispatch: { ...state.dispatch, seq, checks: 0, maxSeq: seq + MAX_DISPATCH - 1, attentionSince: null },
+    watchdogAt: now + INITIAL_WATCHDOG_MS,
     completedAt: null,
   };
   const event = makeEvent('REDISPATCHED', 'admin', next, now, { details: { reason: 'ADMIN_RETRY' } });
-  return { kind: 'RETRY', enqueue: { seq, purpose: 'REDISPATCH', claim }, write: stateWrite('S12', state, next, [event]) };
+  return { kind: 'RETRY', enqueue: { seq }, write: stateWrite('S12', state, next, [event]) };
 }

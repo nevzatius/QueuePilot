@@ -15,6 +15,10 @@ import type { EpochMs } from './time.js';
 /**
  * Worker decisions (ARCHITECTURE §6). The adapter calls each function inside a Firestore transaction
  * with the freshly read state, commits `write` when it is not null, and answers Cloud Tasks with `http`.
+ *
+ * Delivery is at-least-once and a task is only a wake-up call (ADR-017): any task of a runnable request may
+ * process it, whatever its `seq`. Duplicate, late or recreated tasks are absorbed by the lease (409), the
+ * attempt budget (I5) and terminal absorption (I3), never by task identity.
  */
 
 // ---------------------------------------------------------------------------
@@ -36,8 +40,6 @@ export type DeliveryDecision =
   | { readonly kind: 'ORPHAN'; readonly http: 200; readonly write: null }
   /** Terminal request: absorbing (I3). Only `duplicateDeliveries` is incremented. */
   | { readonly kind: 'DUPLICATE_SUPPRESSED'; readonly http: 200; readonly write: StateWrite }
-  /** An older generation's task. A newer one exists, so this one is dropped without processing. */
-  | { readonly kind: 'STALE_DISPATCH'; readonly http: 200; readonly write: null }
   /**
    * Anomaly: `seq` is ahead of `dispatch.seq`. Tasks are created only after their `seq` commits, so this
    * indicates a bug or foreign task. No processing; the adapter logs it at ERROR.
@@ -71,7 +73,7 @@ export function decideDelivery(state: RequestState | null, delivery: Delivery, n
     return { kind: 'DUPLICATE_SUPPRESSED', http: 200, write: stateWrite('S11', state, next) };
   }
 
-  if (delivery.seq < state.dispatch.seq) return { kind: 'STALE_DISPATCH', http: 200, write: null };
+  // An older order's task is as good as the latest one: no STALE_DISPATCH (ADR-017).
   if (delivery.seq > state.dispatch.seq) return { kind: 'FUTURE_DISPATCH', http: 200, write: null };
 
   if (isLeaseValid(state, now)) return { kind: 'LEASE_HELD', http: 409, write: null };
@@ -90,7 +92,12 @@ export function decideDelivery(state: RequestState | null, delivery: Delivery, n
     ...state,
     status: 'PROCESSING',
     processing: { ...state.processing, attempts: attempt, lease },
-    dispatch: { ...state.dispatch, deliveredSeq: delivery.seq, checks: 0 },
+    dispatch: {
+      ...state.dispatch,
+      deliveredSeq: Math.max(state.dispatch.deliveredSeq, delivery.seq),
+      checks: 0,
+      attentionSince: null,
+    },
     watchdogAt: lease.expiresAt + LEASE_GRACE_MS,
     startedAt: state.startedAt ?? now,
   };
@@ -173,6 +180,7 @@ export function decideCompletion(
         ...state,
         status: 'COMPLETED',
         processing: { ...state.processing, lease: null },
+        dispatch: { ...state.dispatch, attentionSince: null },
         watchdogAt: null,
         completedAt: now,
       };
@@ -190,6 +198,7 @@ export function decideCompletion(
           ...state,
           status: 'ACCEPTED',
           processing: { ...state.processing, lease: null },
+          dispatch: { ...state.dispatch, attentionSince: null },
           watchdogAt: now + RETRY_WATCHDOG_MS,
         },
         outcome.error,

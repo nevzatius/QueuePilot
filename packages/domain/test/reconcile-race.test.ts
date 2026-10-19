@@ -1,353 +1,423 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ATTENTION_REDISPATCH_MS,
+  LEASE_GRACE_MS,
+  LEASE_MS,
+  MAX_ATTEMPTS,
   MAX_DISPATCH,
-  SHORT_RECHECK_MS,
-  decideCompletion,
-  decideDelivery,
-  decideEnqueueResult,
-  decideReconcile,
-  decideVerifyResult,
-  type DomainEvent,
-  type EnqueueDecision,
-  type EnqueueOrder,
-  type EnqueueOutcome,
-  type ProbeResult,
-  type ProcessingOutcome,
-  type ReconcileDecision,
+  PROBE_BACKOFF_CAP_MS,
+  RETRY_WATCHDOG_MS,
+  isStuck,
+  needsAttention,
   type RequestState,
-  type StateWrite,
-  type VerifyDecision,
 } from '../src/index.js';
-import { MIN, T0, accepted, apply } from './fixtures.js';
+import { MIN, S, T0, accepted } from './fixtures.js';
+import { OK, TRANSIENT, Reconciler, World, Worker, deliverAndComplete, drain, pick, prng } from './model.js';
+
+const HOUR = 60 * MIN;
+/** Worst case from "infrastructure restored" to a terminal status when every actor is healthy. */
+const RECOVERY_BOUND_MS = ATTENTION_REDISPATCH_MS + LEASE_MS + LEASE_GRACE_MS;
+
+/** Upper bound on dispatch orders over `elapsed` ms without any delivery (prompt budget, then attention). */
+const ordersBound = (elapsed: number) => MAX_DISPATCH - 1 + Math.ceil(elapsed / ATTENTION_REDISPATCH_MS);
 
 /**
- * Concurrent reconcilers against a fake queue. Firestore is modelled as one serialised state: every
- * decision reads the current state and commits immediately, as a transaction would. Queue calls are
- * side effects that no claim can fence, so a stalled actor may still perform them late.
+ * Undelivered request at `seq` whose task was never created (lost enqueues). `seq = 1` is the API's
+ * order; `seq = MAX_DISPATCH` is the last prompt order, so the next one is an attention order.
  */
-class FakeQueue {
-  /** `LIVE` until delivered successfully or deleted; then the name stays taken (`TOMBSTONE`). */
-  private readonly names = new Map<number, 'LIVE' | 'TOMBSTONE'>();
-  create(seq: number): EnqueueOutcome {
-    if (this.names.has(seq)) return { result: 'ALREADY_EXISTS' };
-    this.names.set(seq, 'LIVE');
-    return { result: 'CREATED' };
-  }
-  get(seq: number): ProbeResult {
-    return this.names.get(seq) === 'LIVE' ? 'EXISTS' : 'NOT_FOUND';
-  }
-  /** The task finished (2xx) or the queue deleted it. */
-  remove(seq: number): void {
-    this.names.set(seq, 'TOMBSTONE');
-  }
-  isLive(seq: number): boolean {
-    return this.names.get(seq) === 'LIVE';
-  }
-}
-
-class World {
-  readonly queue = new FakeQueue();
-  readonly events: DomainEvent[] = [];
-  now = T0;
-  constructor(public state: RequestState) {}
-  commit(write: StateWrite | null): void {
-    if (write === null) return;
-    this.state = apply(this.state, write);
-    this.events.push(...write.events);
-  }
-  at(t: number): this {
-    this.now = t;
-    return this;
-  }
-}
-
-/** One reconciler instance, driven step by step through the adapter flow in `reconcile.ts`. */
-class Reconciler {
-  order: EnqueueOrder | null = null;
-  constructor(private readonly w: World) {}
-
-  /** Steps 1-2: plain read, getTask, then the transactional decision. Keeps the order on a claim. */
-  claim(probe: ProbeResult = this.w.queue.get(this.w.state.dispatch.seq)): ReconcileDecision {
-    const plan = decideReconcile(this.w.state, null, this.w.now);
-    const d = plan.kind === 'PROBE_TASK' ? decideReconcile(this.w.state, { seq: plan.seq, result: probe }, this.w.now) : plan;
-    this.w.commit(d.write);
-    if (d.kind === 'RECREATE_TASK' || d.kind === 'REDISPATCH') this.order = d.enqueue;
-    return d;
-  }
-  /** Step 3, first half: the unfenced side effect. */
-  create(): EnqueueOutcome {
-    return this.w.queue.create(this.requireOrder().seq);
-  }
-  /** Step 3, second half. */
-  interpret(outcome: EnqueueOutcome): EnqueueDecision {
-    const d = decideEnqueueResult(this.w.state, this.requireOrder(), outcome, this.w.now);
-    this.w.commit(d.write);
-    return d;
-  }
-  /** Step 4: re-probe after ALREADY_EXISTS, then the transactional decision. */
-  verify(probe: ProbeResult = this.w.queue.get(this.requireOrder().seq)): VerifyDecision {
-    const order = this.requireOrder();
-    const d = decideVerifyResult(this.w.state, order, { seq: order.seq, result: probe }, this.w.now);
-    this.w.commit(d.write);
-    if (d.kind === 'REDISPATCH') this.order = d.enqueue;
-    return d;
-  }
-  private requireOrder(): EnqueueOrder {
-    if (this.order === null) throw new Error('no enqueue order');
-    return this.order;
-  }
-}
-
-const OK: ProcessingOutcome = {
-  kind: 'SUCCESS',
-  result: { rulesVersion: 'triage-v1', lane: 'standard', slaTargetMinutes: 90, team: 'roadside-urban', score: 35 },
-};
-
-/** A worker delivery of `seq` that runs to completion and acknowledges the task. */
-function deliverAndComplete(w: World, seq: number, leaseId = 'L1') {
-  const d = decideDelivery(w.state, { seq, leaseId }, w.now);
-  w.commit(d.write);
-  if (d.kind !== 'ACQUIRE_LEASE') return d.kind;
-  const c = decideCompletion(w.state, leaseId, OK, w.now);
-  w.commit(c.write);
-  w.queue.remove(seq);
-  return c.kind;
-}
-
-/**
- * Undelivered request at `seq` whose task was never created (e.g. createTask failed after S1 or S9).
- * `seq = 1` is the first generation; `seq = MAX_DISPATCH` is the last one the budget allows.
- */
-function lostEnqueue(seq: number): World {
-  return new World(accepted({ processing: { attempts: seq - 1 }, dispatch: { seq, deliveredSeq: seq - 1 }, watchdogAt: T0 }));
-}
-
-/**
- * The reported race: A claims NOT_FOUND and stalls, its claim expires, B claims NOT_FOUND, A creates the
- * task late and crashes, and B's createTask answers ALREADY_EXISTS.
- */
-function raceToAlreadyExists(seq: number) {
-  const w = lostEnqueue(seq);
-  const a = new Reconciler(w);
-  const b = new Reconciler(w);
-  expect(a.claim().kind).toBe('RECREATE_TASK');
-  w.at(a.order!.claim); // A stalls until its claim is due
-  expect(b.claim().kind).toBe('RECREATE_TASK');
-  expect(b.order!.claim).toBeGreaterThan(a.order!.claim);
-  expect(a.create()).toEqual({ result: 'CREATED' }); // A's late side effect; A crashes before interpreting it
-  const outcome = b.create();
-  expect(outcome).toEqual({ result: 'ALREADY_EXISTS' });
-  expect(b.interpret(outcome).kind).toBe('VERIFY_TASK');
-  return { w, a, b };
-}
+const lostEnqueue = (seq: number): RequestState => accepted({ dispatch: { seq }, watchdogAt: T0 });
 
 const SEQS: Array<[string, number]> = [
   ['seq = 1', 1],
   ['seq = maxSeq', MAX_DISPATCH],
 ];
 
-describe('reconciler race: a stalled claimant creates the task late (A2.1)', () => {
-  it.each(SEQS)('%s: B re-probes EXISTS and waits; no seq++, no FAILED, the live task completes', (_name, seq) => {
-    const { w, b } = raceToAlreadyExists(seq);
+/**
+ * The verified race (A2.2), replayed against ADR-017:
+ * A's order expires, B takes over, B observes ALREADY_EXISTS and NOT_FOUND, the tombstone expires, A creates
+ * its task late, then B commits its decision.
+ */
+function verifiedRace(seq: number, aWakesUp = true) {
+  const w = new World(lostEnqueue(seq));
+  const a = new Reconciler(w);
+  const b = new Reconciler(w);
+  // A probes `seq` (NOT_FOUND), commits its order seq+1 and stalls before createTask.
+  expect(a.pass()).toMatchObject({ kind: 'DISPATCH', enqueue: { seq: seq + 1 } });
+  // A's order expires: the watchdog it committed is due.
+  w.until(w.state.watchdogAt);
+  // B takes over. A never created seq+1, so B's probe is NOT_FOUND too, and B orders seq+2.
+  expect(b.pass()).toMatchObject({ kind: 'DISPATCH', enqueue: { seq: seq + 2 } });
+  // B's createTask answers ALREADY_EXISTS (its own earlier call created the name, which is gone since) and
+  // a getTask answers NOT_FOUND.
+  w.queue.tombstone(seq + 2);
+  const outcome = b.create();
+  expect(outcome).toEqual({ result: 'ALREADY_EXISTS' });
+  expect(w.queue.get(seq + 2)).toBe('NOT_FOUND');
+  // The tombstone expires. Then A wakes up and creates its task late.
+  w.queue.forgetTombstones();
+  if (aWakesUp) expect(a.create()).toEqual({ result: 'CREATED' });
+  return { w, a, b, outcome };
+}
+
+describe('A2.2 verified race: a late createTask after a takeover', () => {
+  it.each(SEQS)('%s: B commits without effect, A\'s late task processes the request, nothing fails', (_name, seq) => {
+    const { w, a, b, outcome } = verifiedRace(seq);
     const before = w.state;
-    const v = b.verify();
-    expect(v.kind).toBe('WAIT_FOR_TASK');
-    expect(w.state).toMatchObject({ status: 'ACCEPTED', statusReason: null, dispatch: { seq, checks: 1 } });
-    expect(w.state.watchdogAt).toBe(w.now + 2 * MIN);
-    expect(w.events).toEqual([]);
-    expect(before.dispatch.seq).toBe(seq);
+    // B commits its decision: ALREADY_EXISTS on its own name is CREATED, so there is nothing to record.
+    expect(b.record(outcome)).toMatchObject({ kind: 'NOOP', reason: 'UNCHANGED' });
+    expect(w.state).toBe(before);
+    expect(w.state).toMatchObject({ status: 'ACCEPTED', statusReason: null, dispatch: { seq: seq + 2 }, processing: { attempts: 0 } });
+    expect(needsAttention(w.state)).toBe(seq === MAX_DISPATCH);
 
-    // The task A created is still the current generation and is processed normally.
-    expect(deliverAndComplete(w, seq)).toBe('COMPLETE');
-    expect(w.state).toMatchObject({ status: 'COMPLETED', dispatch: { seq } });
+    // A's late task belongs to an older order and is still processed normally.
+    expect(deliverAndComplete(w, seq + 1)).toBe('COMPLETE');
+    expect(w.state).toMatchObject({ status: 'COMPLETED', processing: { attempts: 1 }, dispatch: { attentionSince: null } });
+    expect(a.record()).toMatchObject({ kind: 'NOOP', reason: 'TERMINAL' });
+
+    // Two orders, one per actor, each with its own name. Budgets were not touched by the race.
+    const attention = seq === MAX_DISPATCH;
+    expect(w.orders.map((o) => [o.seq, o.attention])).toEqual([
+      [seq + 1, attention],
+      [seq + 2, attention],
+    ]);
+    expect(w.events.filter((e) => e.type === 'FAILED')).toEqual([]);
+    expect(w.events.filter((e) => e.type === 'REDISPATCHED').map((e) => e.id)).toEqual(
+      attention ? [`REDISPATCHED-s${seq + 1}`] : [`REDISPATCHED-s${seq + 1}`, `REDISPATCHED-s${seq + 2}`],
+    );
+    w.checkDispatchRate();
   });
 
-  it.each(SEQS)('%s: post-ALREADY_EXISTS UNKNOWN changes only the watchdog and retries in 1 minute', (_name, seq) => {
-    const { w, b } = raceToAlreadyExists(seq);
-    const before = w.state;
-    expect(b.verify('UNKNOWN').kind).toBe('PROBE_UNKNOWN');
-    expect(w.state).toEqual({ ...before, watchdogAt: w.now + SHORT_RECHECK_MS });
-    // The next pass finds A's live task.
-    w.at(w.now + SHORT_RECHECK_MS);
-    expect(new Reconciler(w).claim().kind).toBe('WAIT_FOR_TASK');
-    expect(w.state.dispatch.seq).toBe(seq);
+  it.each(SEQS)('%s: if A never wakes up, the next due pass dispatches again and the request completes', (_name, seq) => {
+    const { w, b, outcome } = verifiedRace(seq, false);
+    b.record(outcome);
+    expect(w.queue.live()).toEqual([]);
+    expect(drain(w)).toBeLessThanOrEqual(RECOVERY_BOUND_MS);
+    expect(w.state).toMatchObject({ status: 'COMPLETED', processing: { attempts: 1 }, dispatch: { seq: seq + 3 } });
+    w.checkDispatchRate();
   });
 
-  it.each(SEQS)('%s: post-ALREADY_EXISTS NOT_FOUND after the live task completed is fenced by the fresh read', (_name, seq) => {
-    const { w, b } = raceToAlreadyExists(seq);
-    expect(deliverAndComplete(w, seq)).toBe('COMPLETE'); // A's task runs between B's createTask and B's probe
-    expect(b.verify()).toMatchObject({ kind: 'NOOP', reason: 'TERMINAL' });
-    expect(w.state).toMatchObject({ status: 'COMPLETED', dispatch: { seq } });
-  });
+  it.each(SEQS)('%s: every interleaving of A, B, the tombstone, a worker and a third reconciler is safe and live', (_name, seq) => {
+    type Step = 'aCreate' | 'aRecord' | 'bCreate' | 'bRecord' | 'expire' | 'worker' | 'reconcile';
+    const steps: Step[] = ['aCreate', 'aRecord', 'bCreate', 'bRecord', 'expire', 'worker', 'reconcile'];
+    const before: Partial<Record<Step, Step>> = { aRecord: 'aCreate', bRecord: 'bCreate' };
+    const orders: Step[][] = [];
+    const permute = (prefix: Step[], rest: Step[]) => {
+      if (rest.length === 0) orders.push(prefix);
+      for (const s of rest) {
+        const dep = before[s];
+        if (dep !== undefined && !prefix.includes(dep)) continue;
+        permute([...prefix, s], rest.filter((x) => x !== s));
+      }
+    };
+    permute([], steps);
+    expect(orders).toHaveLength(1260);
 
-  it.each(SEQS)('%s: a lease taken between ALREADY_EXISTS and the probe fences B', (_name, seq) => {
-    const { w, b } = raceToAlreadyExists(seq);
-    const d = decideDelivery(w.state, { seq, leaseId: 'L1' }, w.now);
-    w.commit(d.write);
-    expect(d.kind).toBe('ACQUIRE_LEASE');
-    expect(b.verify()).toMatchObject({ kind: 'NOOP', reason: 'CLAIM_LOST' });
-    expect(w.state).toMatchObject({ status: 'PROCESSING', dispatch: { seq } });
-  });
-
-  it('the stalled claimant that wakes up later cannot interpret its own CREATED', () => {
-    const { w, a, b } = raceToAlreadyExists(1);
-    b.verify();
-    expect(a.interpret({ result: 'CREATED' })).toMatchObject({ kind: 'NOOP', reason: 'CLAIM_LOST' });
-    expect(w.state.dispatch.seq).toBe(1);
-  });
-});
-
-describe('reconciler race: genuinely lost tasks are still recovered', () => {
-  /** The task was created, then deleted by the queue before any lease commit (pre-lease failures). */
-  function tombstoned(seq: number) {
-    const w = lostEnqueue(seq);
-    w.queue.create(seq);
-    w.queue.remove(seq);
-    const r = new Reconciler(w);
-    expect(r.claim().kind).toBe('RECREATE_TASK');
-    const outcome = r.create();
-    expect(outcome).toEqual({ result: 'ALREADY_EXISTS' });
-    expect(r.interpret(outcome).kind).toBe('VERIFY_TASK');
-    return { w, r };
-  }
-
-  it('seq = 1: ALREADY_EXISTS then NOT_FOUND under the current claim proves the tombstone → seq 2 completes', () => {
-    const { w, r } = tombstoned(1);
-    const v = r.verify();
-    expect(v.kind).toBe('REDISPATCH');
-    expect(w.events.map((e) => [e.id, e.details])).toEqual([['REDISPATCHED-s2', { reason: 'TOMBSTONE' }]]);
-    expect(r.interpret(r.create()).kind).toBe('SCHEDULED');
-    expect(deliverAndComplete(w, 2)).toBe('COMPLETE');
-    expect(w.state).toMatchObject({ status: 'COMPLETED', dispatch: { seq: 2 } });
-  });
-
-  it('seq = maxSeq: a proven tombstone ends in DISPATCH_EXHAUSTED', () => {
-    const { w, r } = tombstoned(MAX_DISPATCH);
-    expect(r.verify()).toMatchObject({ kind: 'FAIL', reason: 'DISPATCH_EXHAUSTED' });
-    expect(w.state).toMatchObject({ status: 'FAILED', statusReason: 'DISPATCH_EXHAUSTED', watchdogAt: null });
-  });
-
-  it('a delivered task that disappears is still redispatched by step 6 without any ALREADY_EXISTS', () => {
-    const w = new World(accepted({ processing: { attempts: 1 }, dispatch: { seq: 1, deliveredSeq: 1 } }));
-    expect(new Reconciler(w).claim('NOT_FOUND').kind).toBe('REDISPATCH');
-    expect(w.state.dispatch.seq).toBe(2);
-  });
-});
-
-describe('reconciler race: expired claims and stale results', () => {
-  it('B stalls during the verify probe; C takes over; B\'s late NOT_FOUND is discarded', () => {
-    const { w, b } = raceToAlreadyExists(1);
-    w.at(b.order!.claim); // B's claim is due; C finds A's live task
-    const c = new Reconciler(w);
-    expect(c.claim().kind).toBe('WAIT_FOR_TASK');
-    expect(b.verify('NOT_FOUND')).toMatchObject({ kind: 'NOOP', reason: 'CLAIM_LOST' });
-    expect(w.state.dispatch.seq).toBe(1);
-  });
-
-  it('a probe answer for another seq is discarded', () => {
-    const { w, b } = raceToAlreadyExists(1);
-    const d = decideVerifyResult(w.state, b.order!, { seq: 2, result: 'NOT_FOUND' }, w.now);
-    expect(d).toMatchObject({ kind: 'NOOP', reason: 'STALE_SEQ' });
-  });
-
-  it('after a proven tombstone, the older generation\'s claimant and its late task are both stale', () => {
-    const w = lostEnqueue(1);
-    w.queue.create(1);
-    w.queue.remove(1);
-    const a = new Reconciler(w);
-    const b = new Reconciler(w);
-    a.claim();
-    w.at(a.order!.claim);
-    b.claim();
-    expect(b.interpret(b.create()).kind).toBe('VERIFY_TASK');
-    expect(b.verify().kind).toBe('REDISPATCH');
-    const stale: EnqueueOrder = a.order!;
-    expect(a.interpret(a.create())).toMatchObject({ kind: 'NOOP', reason: 'STALE_SEQ' });
-    expect(decideVerifyResult(w.state, stale, { seq: 1, result: 'NOT_FOUND' }, w.now)).toMatchObject({
-      kind: 'NOOP',
-      reason: 'STALE_SEQ',
-    });
-    expect(decideDelivery(w.state, { seq: 1, leaseId: 'old' }, w.now).kind).toBe('STALE_DISPATCH');
-    expect(w.state.dispatch.seq).toBe(2);
-  });
-
-  it('two stalled claimants of one generation increment seq at most once', () => {
-    const w = lostEnqueue(1);
-    w.queue.create(1);
-    w.queue.remove(1);
-    const a = new Reconciler(w);
-    const b = new Reconciler(w);
-    a.claim();
-    w.at(a.order!.claim);
-    b.claim();
-    const aOutcome = a.create();
-    const bOutcome = b.create();
-    expect(a.interpret(aOutcome)).toMatchObject({ kind: 'NOOP', reason: 'CLAIM_LOST' });
-    expect(b.interpret(bOutcome).kind).toBe('VERIFY_TASK');
-    expect(b.verify().kind).toBe('REDISPATCH');
-    expect(w.state.dispatch.seq).toBe(2);
-    expect(w.events.filter((e) => e.type === 'REDISPATCHED')).toHaveLength(1);
-  });
-});
-
-describe('reconciler race: concurrent completion and reconcile', () => {
-  it('a completion between B\'s claim and B\'s createTask result ends B\'s flow without a write', () => {
-    const w = lostEnqueue(1);
-    const a = new Reconciler(w);
-    const b = new Reconciler(w);
-    a.claim();
-    w.at(a.order!.claim);
-    b.claim();
-    a.create();
-    expect(deliverAndComplete(w, 1)).toBe('COMPLETE');
-    const after = w.state;
-    expect(b.interpret(b.create())).toMatchObject({ kind: 'NOOP', reason: 'TERMINAL' });
-    expect(w.state).toBe(after);
-  });
-
-  it('a reconciler that sees the completed request only clears its watchdog', () => {
-    const w = lostEnqueue(1);
-    const r = new Reconciler(w);
-    r.claim();
-    expect(r.interpret(r.create()).kind).toBe('SCHEDULED');
-    expect(deliverAndComplete(w, 1)).toBe('COMPLETE');
-    expect(new Reconciler(w).claim('NOT_FOUND')).toMatchObject({ kind: 'NOOP', reason: 'ALREADY_CLEAN' });
-    expect(w.state.status).toBe('COMPLETED');
-  });
-
-  it('the live task stays the only processed generation under any interleaving of A, B and the worker', () => {
-    // Exhaustive over the order of A's late create, B's create, B's interpret, the worker run and B's verify.
-    type Step = 'aCreate' | 'bCreate' | 'worker';
-    const orders: Step[][] = [
-      ['aCreate', 'bCreate', 'worker'],
-      ['aCreate', 'worker', 'bCreate'],
-      ['bCreate', 'aCreate', 'worker'],
-      ['bCreate', 'worker', 'aCreate'],
-      ['worker', 'aCreate', 'bCreate'],
-      ['worker', 'bCreate', 'aCreate'],
-    ];
-    for (const seq of [1, MAX_DISPATCH]) {
-      for (const steps of orders) {
-        const w = lostEnqueue(seq);
+    for (const tombstoned of [false, true]) {
+      for (const order of orders) {
+        const label = `tombstoned=${tombstoned}: ${order.join(' → ')}`;
+        const w = new World(lostEnqueue(seq));
         const a = new Reconciler(w);
         const b = new Reconciler(w);
-        a.claim();
-        w.at(a.order!.claim);
-        b.claim();
-        let bOutcome: EnqueueOutcome | null = null;
-        for (const step of steps) {
+        a.pass();
+        w.until(w.state.watchdogAt);
+        b.pass();
+        if (tombstoned) w.queue.tombstone(seq + 2);
+        for (const step of order) {
           if (step === 'aCreate') a.create();
-          if (step === 'bCreate') bOutcome = b.create();
-          if (step === 'worker' && w.queue.isLive(seq)) deliverAndComplete(w, seq);
+          if (step === 'aRecord') a.record();
+          if (step === 'bCreate') b.create();
+          if (step === 'bRecord') b.record();
+          if (step === 'expire') w.queue.forgetTombstones();
+          if (step === 'worker') for (const s of w.queue.live()) deliverAndComplete(w, s);
+          if (step === 'reconcile') {
+            w.until(w.state.watchdogAt);
+            new Reconciler(w).fullPass();
+          }
         }
-        const e = b.interpret(bOutcome!);
-        if (e.kind === 'VERIFY_TASK') b.verify();
-        if (w.queue.isLive(seq)) deliverAndComplete(w, seq, 'L2');
-        const label = `seq ${seq}, ${steps.join(' → ')}`;
-        expect(w.state.dispatch.seq, label).toBe(seq);
+        expect(drain(w), label).toBeLessThanOrEqual(RECOVERY_BOUND_MS);
         expect(w.state.status, label).toBe('COMPLETED');
-        expect(w.events.filter((ev) => ev.type === 'PROCESSING_STARTED'), label).toHaveLength(1);
+        expect(w.state.processing.attempts, label).toBe(1);
+        w.checkDispatchRate();
       }
     }
+  });
+});
+
+describe('delayed side effects and duplicate delivery', () => {
+  it('the API\'s createTask for seq 1 lands after the reconciler ordered seq 2: one start, one suppressed duplicate', () => {
+    const w = World.accepted();
+    w.until(w.state.watchdogAt);
+    expect(new Reconciler(w).fullPass()).toMatchObject({ kind: 'DISPATCH', enqueue: { seq: 2 }, attention: false });
+    w.queue.create(1); // the API's createTask, late
+    expect(w.queue.live().sort()).toEqual([1, 2]);
+    // The older task arrives first and does the work; the newer one is absorbed.
+    expect(deliverAndComplete(w, 1)).toBe('COMPLETE');
+    expect(new Worker(w).deliver(2)).toMatchObject({ kind: 'DUPLICATE_SUPPRESSED', http: 200 });
+    expect(w.state).toMatchObject({
+      status: 'COMPLETED',
+      processing: { attempts: 1, duplicateDeliveries: 1 },
+      dispatch: { seq: 2, deliveredSeq: 1 },
+    });
+  });
+
+  it('two deliveries in flight at once: one lease, one 409; the retry after completion gets 200', () => {
+    const w = World.accepted();
+    w.queue.create(1);
+    const w1 = new Worker(w, 'W1');
+    const w2 = new Worker(w, 'W2');
+    expect(w1.deliver(1).kind).toBe('ACQUIRE_LEASE');
+    expect(w2.deliver(1)).toMatchObject({ kind: 'LEASE_HELD', http: 409 });
+    expect(w1.complete(OK).kind).toBe('COMPLETE');
+    expect(w2.deliver(1)).toMatchObject({ kind: 'DUPLICATE_SUPPRESSED', http: 200 });
+    expect(w.state.processing).toMatchObject({ attempts: 1, duplicateDeliveries: 1 });
+  });
+
+  it('tasks of two orders delivered concurrently: the second waits on the lease, then is suppressed', () => {
+    const w = new World(lostEnqueue(1));
+    new Reconciler(w).fullPass();
+    w.queue.create(1);
+    const w1 = new Worker(w, 'W1');
+    const w2 = new Worker(w, 'W2');
+    expect(w1.deliver(2).kind).toBe('ACQUIRE_LEASE');
+    expect(w2.deliver(1).kind).toBe('LEASE_HELD');
+    w1.complete(OK);
+    expect(w2.deliver(1).kind).toBe('DUPLICATE_SUPPRESSED');
+    expect(w.state.processing.attempts).toBe(1);
+  });
+});
+
+describe('worker crashes', () => {
+  it('crash after the lease, then the queue gives up on the task: a fresh order and a takeover complete it', () => {
+    const w = World.accepted();
+    w.queue.create(1);
+    const crashed = new Worker(w, 'W1');
+    expect(crashed.deliver(1).kind).toBe('ACQUIRE_LEASE');
+    crashed.crash();
+    w.queue.remove(1); // retries exhausted on the queue side
+    w.until(w.state.watchdogAt); // lease expiry + 30 s
+    expect(new Reconciler(w).fullPass()).toMatchObject({ kind: 'DISPATCH', enqueue: { seq: 2 }, attention: false });
+    const d = new Worker(w, 'W2').deliver(2);
+    expect(d).toMatchObject({ kind: 'ACQUIRE_LEASE', takeover: true });
+    expect(w.state.processing.attempts).toBe(2);
+  });
+
+  it('a crash on every attempt fails only once MAX_ATTEMPTS business starts happened (I5), never earlier', () => {
+    const w = World.accepted();
+    w.queue.create(1);
+    const statuses: string[] = [];
+    for (let i = 0; i < 2 * MAX_ATTEMPTS && w.state.status !== 'FAILED'; i++) {
+      const worker = new Worker(w, `W${i}`);
+      const d = worker.deliver(1); // the queue retries the same live task
+      statuses.push(d.kind);
+      worker.crash();
+      w.advance(LEASE_MS);
+    }
+    expect(statuses).toEqual([...Array<string>(MAX_ATTEMPTS).fill('ACQUIRE_LEASE'), 'FAIL']);
+    expect(w.state).toMatchObject({ status: 'FAILED', statusReason: 'ATTEMPTS_EXHAUSTED', processing: { attempts: MAX_ATTEMPTS } });
+  });
+
+  it('a reconciler that crashes between its order and createTask loses nothing: the order is durable', () => {
+    const w = World.accepted(); // the API's createTask was lost
+    w.until(w.state.watchdogAt);
+    const a = new Reconciler(w);
+    expect(a.pass()).toMatchObject({ kind: 'DISPATCH', enqueue: { seq: 2 } });
+    a.crash();
+    expect(w.state.watchdogAt).toBe(w.now + RETRY_WATCHDOG_MS);
+    w.until(w.state.watchdogAt);
+    expect(new Reconciler(w).fullPass()).toMatchObject({ kind: 'DISPATCH', enqueue: { seq: 3 } });
+    expect(deliverAndComplete(w, 3)).toBe('COMPLETE');
+  });
+});
+
+describe('queue creation failure and recovery after restoration', () => {
+  function outage(until: number) {
+    const w = World.accepted();
+    w.queue.outage = true;
+    expect(w.queue.create(1).result).toBe('FAILED'); // the API's createTask (logged only)
+    const r = new Reconciler(w);
+    while ((w.state.watchdogAt as number) <= until) {
+      w.until(w.state.watchdogAt);
+      r.fullPass();
+    }
+    return w;
+  }
+
+  it('a 3 h outage: no task, bounded orders, attention instead of FAILED', () => {
+    const w = outage(T0 + 3 * HOUR);
+    expect(w.queue.created).toBe(0);
+    expect(w.orders.map((o) => (o.at - T0) / MIN)).toEqual([1, 6, 11, 41, 71, 101, 131, 161]);
+    expect(w.orders.map((o) => o.attention)).toEqual([false, false, true, true, true, true, true, true]);
+    expect(w.state).toMatchObject({
+      status: 'ACCEPTED',
+      statusReason: null,
+      dispatch: { seq: 9, attentionSince: T0 + 11 * MIN, lastError: { code: 'UNAVAILABLE' } },
+    });
+    expect(needsAttention(w.state)).toBe(true);
+    expect(isStuck(w.state, w.now)).toBe(false); // the reconciler is running; attention is the signal
+    // The timeline records entering attention once, not every 30 minutes.
+    expect(w.events.map((e) => e.id)).toEqual(['ACCEPTED-s1', 'REDISPATCHED-s2', 'REDISPATCHED-s3', 'REDISPATCHED-s4']);
+    w.checkDispatchRate();
+  });
+
+  it('recovery after restoration takes at most one attention interval and clears attention', () => {
+    const w = outage(T0 + 3 * HOUR);
+    expect(drain(w)).toBeLessThanOrEqual(ATTENTION_REDISPATCH_MS);
+    expect(w.state).toMatchObject({ status: 'COMPLETED', processing: { attempts: 1 }, dispatch: { attentionSince: null } });
+    expect(w.queue.created).toBe(1);
+  });
+
+  it('a 24 h outage stays within the order bound and creates no task', () => {
+    const w = outage(T0 + 24 * HOUR);
+    expect(w.orders.length).toBeLessThanOrEqual(ordersBound(24 * HOUR));
+    expect(w.queue.created).toBe(0);
+    expect(w.state.status).toBe('ACCEPTED');
+    expect(drain(w)).toBeLessThanOrEqual(ATTENTION_REDISPATCH_MS);
+  });
+
+  it('createTask failures are recorded for operators; the next success clears them', () => {
+    const w = World.accepted();
+    w.until(w.state.watchdogAt);
+    w.queue.outage = true;
+    new Reconciler(w).fullPass();
+    expect(w.state.dispatch.lastError).toMatchObject({ code: 'UNAVAILABLE', at: w.now });
+    w.queue.outage = false;
+    w.until(w.state.watchdogAt);
+    new Reconciler(w).fullPass();
+    expect(w.state.dispatch.lastError).toBeNull();
+  });
+});
+
+describe('bounded retries and backpressure', () => {
+  it('a queue paused for 6 h with a live task: no new orders, probes back off to 15 min, completes on resume', () => {
+    const w = World.accepted();
+    w.queue.create(1);
+    const r = new Reconciler(w);
+    const passes: number[] = [];
+    while ((w.state.watchdogAt as number) <= T0 + 6 * HOUR) {
+      w.until(w.state.watchdogAt);
+      passes.push(w.now);
+      expect(r.fullPass().kind).toBe('WAIT_FOR_TASK');
+    }
+    expect(w.orders).toEqual([]);
+    expect(w.state.dispatch.seq).toBe(1);
+    const gaps = passes.slice(1).map((t, i) => t - (passes[i] as number));
+    expect(gaps.slice(0, 4).map((g) => g / MIN)).toEqual([2, 4, 8, 15]);
+    expect(new Set(gaps.slice(4))).toEqual(new Set([PROBE_BACKOFF_CAP_MS]));
+    expect(deliverAndComplete(w, 1)).toBe('COMPLETE');
+  });
+
+  it('a getTask that always errors (UNKNOWN) cannot amplify tasks beyond the order bound', () => {
+    const w = World.accepted();
+    w.queue.create(1);
+    w.queue.probeOverride = 'UNKNOWN';
+    const r = new Reconciler(w);
+    while ((w.state.watchdogAt as number) <= T0 + 6 * HOUR) {
+      w.until(w.state.watchdogAt);
+      r.fullPass();
+    }
+    expect(w.queue.created).toBeLessThanOrEqual(1 + ordersBound(6 * HOUR));
+    w.checkDispatchRate();
+    // Every one of those tasks is absorbed: exactly one business start.
+    for (const seq of w.queue.live()) deliverAndComplete(w, seq);
+    expect(w.state).toMatchObject({ status: 'COMPLETED', processing: { attempts: 1 } });
+    expect(w.state.processing.duplicateDeliveries).toBe(w.queue.created - 1);
+  });
+
+  it('tasks that keep vanishing undelivered are re-dispatched at the bounded cadence, never failed', () => {
+    const w = World.accepted();
+    const r = new Reconciler(w);
+    while ((w.state.watchdogAt as number) <= T0 + 6 * HOUR) {
+      w.until(w.state.watchdogAt);
+      r.fullPass();
+      for (const seq of w.queue.live()) w.queue.remove(seq); // purged before delivery
+    }
+    expect(w.orders.length).toBeLessThanOrEqual(ordersBound(6 * HOUR));
+    expect(w.state).toMatchObject({ status: 'ACCEPTED', statusReason: null });
+    expect(needsAttention(w.state)).toBe(true);
+    w.checkDispatchRate();
+    expect(drain(w)).toBeLessThanOrEqual(RECOVERY_BOUND_MS);
+    expect(w.state.status).toBe('COMPLETED');
+  });
+});
+
+describe('arbitrary scheduling (seeded fuzz)', () => {
+  /**
+   * Two reconcilers, two workers, a stalled creator of the starting `seq`, and a chaotic queue (outages,
+   * lying getTask, drops, tombstone expiry), interleaved at random for 150 steps. Every commit is checked
+   * by `World.checkSafety`. Afterwards the infrastructure is restored and the run must end terminal within
+   * the recovery bound, and the stalled actors' late side effects must change nothing.
+   */
+  function run(seed: number, startSeq: number): RequestState {
+    const rnd = prng(seed);
+    const w = new World(lostEnqueue(startSeq));
+    const reconcilers = [new Reconciler(w), new Reconciler(w)];
+    const workers = [new Worker(w, 'W1'), new Worker(w, 'W2')];
+    let lateCreate = true;
+    for (let step = 0; step < 150; step++) {
+      const live = w.queue.live();
+      const actions: Array<() => unknown> = [
+        () => w.advance(pick(rnd, [S, 20 * S, MIN, 5 * MIN, 31 * MIN])),
+        () => w.until(w.state.watchdogAt),
+        () => w.queue.forgetTombstones(),
+        () => {
+          w.queue.outage = !w.queue.outage;
+        },
+        () => {
+          w.queue.probeOverride = pick(rnd, [null, 'EXISTS', 'NOT_FOUND', 'UNKNOWN'] as const);
+        },
+      ];
+      for (const r of reconcilers) {
+        if (r.stage === 'IDLE') actions.push(() => r.plan());
+        if (r.stage === 'PROBED') actions.push(() => r.decide());
+        if (r.stage === 'ORDERED') actions.push(() => r.create());
+        if (r.stage === 'CREATED') actions.push(() => r.record());
+        if (r.stage !== 'IDLE') actions.push(() => r.crash());
+      }
+      for (const wk of workers) {
+        if (wk.lease === null && live.length > 0) actions.push(() => wk.deliver(pick(rnd, live)));
+        if (wk.lease !== null) actions.push(() => wk.complete(OK), () => wk.complete(TRANSIENT), () => wk.crash());
+      }
+      if (live.length > 0) actions.push(() => w.queue.remove(pick(rnd, live)));
+      if (lateCreate) {
+        actions.push(() => {
+          lateCreate = false;
+          w.queue.create(startSeq);
+        });
+      }
+      pick(rnd, actions)();
+    }
+
+    expect(drain(w), `seed ${seed}`).toBeLessThanOrEqual(RECOVERY_BOUND_MS);
+    w.checkDispatchRate();
+
+    // Late side effects of every stalled actor, after the request settled.
+    const settled = w.state;
+    if (lateCreate) w.queue.create(startSeq);
+    for (const r of reconcilers) {
+      if (r.stage === 'PROBED') r.decide();
+      if (r.stage === 'ORDERED') r.create();
+      if (r.stage === 'CREATED') r.record();
+    }
+    for (const wk of workers) if (wk.lease !== null) wk.complete(OK);
+    for (const seq of w.queue.live()) deliverAndComplete(w, seq);
+    const bookkeeping = (s: RequestState) => ({ ...s, processing: { ...s.processing, duplicateDeliveries: 0 } });
+    expect(bookkeeping(w.state), `seed ${seed}`).toEqual(bookkeeping(settled));
+    return w.state;
+  }
+
+  it.each(SEQS)('%s: 400 random schedules end COMPLETED, or FAILED only after MAX_ATTEMPTS starts', (_name, seq) => {
+    const outcomes = { COMPLETED: 0, FAILED: 0 };
+    for (let seed = 1; seed <= 400; seed++) {
+      const end = run(seed * 7919 + seq, seq);
+      if (end.status === 'FAILED') {
+        expect(end).toMatchObject({ statusReason: 'ATTEMPTS_EXHAUSTED', processing: { attempts: MAX_ATTEMPTS } });
+        outcomes.FAILED++;
+      } else {
+        expect(end.status).toBe('COMPLETED');
+        outcomes.COMPLETED++;
+      }
+    }
+    // Sanity: the fuzz explores both legitimate endings, and mostly completes.
+    expect(outcomes.COMPLETED).toBeGreaterThan(outcomes.FAILED);
   });
 });

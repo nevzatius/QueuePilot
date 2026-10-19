@@ -30,7 +30,7 @@ describe('S1: acceptance', () => {
       status: 'ACCEPTED',
       statusReason: null,
       processing: { attempts: 0, maxAttempts: MAX_ATTEMPTS, lease: null, lastError: null, duplicateDeliveries: 0 },
-      dispatch: { seq: 1, deliveredSeq: 0, checks: 0, maxSeq: MAX_DISPATCH, lastError: null },
+      dispatch: { seq: 1, deliveredSeq: 0, checks: 0, maxSeq: MAX_DISPATCH, attentionSince: null, lastError: null },
       watchdogAt: T0 + INITIAL_WATCHDOG_MS,
       startedAt: null,
       completedAt: null,
@@ -103,7 +103,7 @@ describe('S12 (P1): admin retry', () => {
       processing: { attempts: 2, maxAttempts: 2 + MAX_ATTEMPTS, lease: null },
       dispatch: { seq: MAX_DISPATCH + 1, deliveredSeq: 2, checks: 0, maxSeq: 2 * MAX_DISPATCH },
     });
-    expect(d.enqueue).toEqual({ seq: MAX_DISPATCH + 1, purpose: 'REDISPATCH', claim: T0 + INITIAL_WATCHDOG_MS });
+    expect(d.enqueue).toEqual({ seq: MAX_DISPATCH + 1 });
     expect(d.write.events.map((e) => [e.id, e.actor, e.details])).toEqual([
       [`REDISPATCHED-s${MAX_DISPATCH + 1}`, 'admin', { reason: 'ADMIN_RETRY' }],
     ]);
@@ -114,10 +114,8 @@ describe('S12 (P1): admin retry', () => {
     const retry = decideAdminRetry(before, 'admin', T0);
     if (retry.kind !== 'RETRY') throw new Error(retry.kind);
     const afterRetry = apply(before, retry.write);
-    const enq = decideEnqueueResult(afterRetry, retry.enqueue, { result: 'CREATED' }, T0 + 1);
-    if (enq.kind !== 'SCHEDULED') throw new Error(enq.kind);
-    const afterEnqueue = apply(afterRetry, enq.write);
-    const d = decideDelivery(afterEnqueue, { seq: retry.enqueue.seq, leaseId: 'L' }, T0 + 2);
+    expect(decideEnqueueResult(afterRetry, retry.enqueue, { result: 'CREATED' }, T0 + 1).kind).toBe('NOOP');
+    const d = decideDelivery(afterRetry, { seq: retry.enqueue.seq, leaseId: 'L' }, T0 + 2);
     expect(d.kind).toBe('ACQUIRE_LEASE');
     expect(d.write?.events.map((e) => e.id)).toEqual([`PROCESSING_STARTED-a${MAX_ATTEMPTS + 1}`]);
   });

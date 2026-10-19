@@ -3,6 +3,8 @@ import {
   LEASE_GRACE_MS,
   LEASE_MS,
   MAX_ATTEMPTS,
+  MAX_DISPATCH,
+  decideCompletion,
   decideDelivery,
   type DeliveryDecision,
   type RequestState,
@@ -17,8 +19,8 @@ describe('decideDelivery: decision table (first match wins)', () => {
     ['COMPLETED', completed(), 1, 'DUPLICATE_SUPPRESSED', 200],
     ['FAILED', failed('PERMANENT_ERROR'), 1, 'DUPLICATE_SUPPRESSED', 200],
     ['terminal beats stale seq', completed({ dispatch: { seq: 2 } }), 1, 'DUPLICATE_SUPPRESSED', 200],
-    ['seq < dispatch.seq', accepted({ dispatch: { seq: 2 } }), 1, 'STALE_DISPATCH', 200],
-    ['stale seq beats a valid lease', processing({ dispatch: { seq: 2 } }), 1, 'STALE_DISPATCH', 200],
+    ['older order\'s task: a valid wake-up', accepted({ dispatch: { seq: 2 } }), 1, 'ACQUIRE_LEASE', null],
+    ['older order\'s task, lease valid', processing({ dispatch: { seq: 2 } }), 1, 'LEASE_HELD', 409],
     ['seq > dispatch.seq (anomaly)', accepted(), 2, 'FUTURE_DISPATCH', 200],
     ['PROCESSING, lease valid', processing(), 1, 'LEASE_HELD', 409],
     ['ACCEPTED, attempts = MAX', accepted({ processing: { attempts: MAX_ATTEMPTS } }), 1, 'FAIL', 200],
@@ -89,6 +91,32 @@ describe('decideDelivery: effects', () => {
     expect(d.write.events).toEqual([]);
   });
 
+  it('an older order\'s task acquires the lease; deliveredSeq never decreases (ADR-017)', () => {
+    const before = accepted({ dispatch: { seq: 3, deliveredSeq: 2 } });
+    const d = decideDelivery(before, delivery(1), T0);
+    if (d.kind !== 'ACQUIRE_LEASE') throw new Error(d.kind);
+    expect(apply(before, d.write).dispatch).toMatchObject({ seq: 3, deliveredSeq: 2 });
+    expect(d.write.events.map((e) => [e.id, e.seq])).toEqual([['PROCESSING_STARTED-a1', 3]]);
+  });
+
+  it('a lease and every lease-holder outcome clear attention (any worker progress)', () => {
+    const attention = { seq: MAX_DISPATCH + 1, attentionSince: T0 - 1 };
+    const before = accepted({ dispatch: attention });
+    const d = decideDelivery(before, delivery(MAX_DISPATCH + 1), T0);
+    if (d.kind !== 'ACQUIRE_LEASE') throw new Error(d.kind);
+    expect(apply(before, d.write).dispatch.attentionSince).toBeNull();
+    // A reconciler may order again while an expired lease is still held; the holder's outcome clears it.
+    const held = processing({ leaseExpiresAt: T0 - 1, dispatch: attention });
+    for (const outcome of [
+      { kind: 'SUCCESS', result: { rulesVersion: 'triage-v1', lane: 'standard', slaTargetMinutes: 60, team: 't', score: 1 } },
+      { kind: 'TRANSIENT_ERROR', error: { code: 'E', message: 'e' } },
+      { kind: 'PERMANENT_ERROR', error: { code: 'E', message: 'e' } },
+    ] as const) {
+      const c = decideCompletion(held, 'lease-1', outcome, T0);
+      expect(c.write === null ? null : apply(held, c.write).dispatch.attentionSince, outcome.kind).toBeNull();
+    }
+  });
+
   it('honours a non-default attempt budget (after an admin retry)', () => {
     const raised = accepted({ processing: { attempts: MAX_ATTEMPTS, maxAttempts: 2 * MAX_ATTEMPTS } });
     expect(decideDelivery(raised, delivery(), T0).kind).toBe('ACQUIRE_LEASE');
@@ -119,7 +147,6 @@ describe('decideDelivery: concurrency boundaries', () => {
   it('only ACQUIRE_LEASE, FAIL and DUPLICATE_SUPPRESSED write; every other row is write-free', () => {
     const writeFree = [
       decideDelivery(null, delivery(), T0),
-      decideDelivery(accepted({ dispatch: { seq: 2 } }), delivery(1), T0),
       decideDelivery(accepted(), delivery(2), T0),
       decideDelivery(processing(), delivery(), T0),
     ];

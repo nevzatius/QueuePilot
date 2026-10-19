@@ -36,8 +36,8 @@ describe('transition table (ARCHITECTURE §6)', () => {
     ['S8', 'PROCESSING', 'FAILED', true],
     ['S9', 'ACCEPTED', 'ACCEPTED', true],
     ['S9', 'PROCESSING', 'PROCESSING', true],
-    ['S10', 'ACCEPTED', 'FAILED', true],
-    ['S10', 'PROCESSING', 'FAILED', true],
+    ['S10', 'ACCEPTED', 'ACCEPTED', true],
+    ['S10', 'PROCESSING', 'PROCESSING', true],
     ['S11', 'COMPLETED', 'COMPLETED', true],
     ['S11', 'FAILED', 'FAILED', true],
     ['S12', 'FAILED', 'ACCEPTED', true],
@@ -47,6 +47,9 @@ describe('transition table (ARCHITECTURE §6)', () => {
     ['S2', 'COMPLETED', 'PROCESSING', false],
     ['S4', 'ACCEPTED', 'COMPLETED', false],
     ['S9', 'ACCEPTED', 'PROCESSING', false],
+    // ADR-017: dispatch never ends in a terminal status.
+    ['S10', 'ACCEPTED', 'FAILED', false],
+    ['S10', 'PROCESSING', 'FAILED', false],
     ['S11', 'COMPLETED', 'FAILED', false],
     ['S11', 'FAILED', 'ACCEPTED', false],
     ['S12', 'COMPLETED', 'ACCEPTED', false],
@@ -89,7 +92,12 @@ describe('state invariants', () => {
       [{ ...accepted(), processing: p.processing }, 'lease only while PROCESSING'],
       [{ ...p, processing: { ...p.processing, lease: null } }, 'PROCESSING requires a lease'],
       [accepted({ processing: { attempts: MAX_ATTEMPTS + 1 } }), '0 <= attempts <= maxAttempts'],
-      [accepted({ dispatch: { seq: MAX_DISPATCH + 1 } }), '1 <= seq <= maxSeq'],
+      [accepted({ dispatch: { seq: 0 } }), 'seq >= 1 and maxSeq >= 1'],
+      [accepted({ dispatch: { attentionSince: T0 } }), 'attentionSince only on non-terminal requests past maxSeq'],
+      [
+        completed({ dispatch: { seq: MAX_DISPATCH + 1, attentionSince: T0 } }),
+        'attentionSince only on non-terminal requests past maxSeq',
+      ],
       [accepted({ dispatch: { deliveredSeq: 2 } }), '0 <= deliveredSeq <= seq'],
     ];
     for (const [state, rule] of cases) expect(stateViolations(state)).toContain(rule);
@@ -113,6 +121,8 @@ function grid(): Array<{ name: string; state: RequestState }> {
     ['accepted retrying', accepted({ processing: { attempts: 2 }, dispatch: { deliveredSeq: 1 } })],
     ['accepted exhausted', accepted({ processing: { attempts: MAX_ATTEMPTS }, dispatch: { deliveredSeq: 1 } })],
     ['accepted seq=MAX delivered', accepted({ processing: { attempts: 1 }, dispatch: { seq: MAX_DISPATCH, deliveredSeq: MAX_DISPATCH } })],
+    ['accepted attention', accepted({ dispatch: { seq: MAX_DISPATCH + 1, attentionSince: T0 - MIN } })],
+    ['processing expired attention', processing({ leaseExpiresAt: T0 - 1, watchdogAt: T0 - 1, dispatch: { seq: MAX_DISPATCH + 1, deliveredSeq: 1, attentionSince: T0 - MIN } })],
     ['processing valid', processing()],
     ['processing expired', processing({ leaseExpiresAt: T0 - 1, watchdogAt: T0 - 1 })],
     ['processing last attempt', processing({ processing: { attempts: MAX_ATTEMPTS } })],
@@ -137,15 +147,17 @@ function allWrites(state: RequestState): Array<[string, StateWrite | null]> {
     for (const leaseId of ['lease-1', 'other']) {
       for (const o of outcomes) out.push([`completion ${leaseId} ${o.kind}`, decideCompletion(state, leaseId, o, now).write]);
     }
-    for (const seq of [1, 2, 3]) {
+    for (const seq of [1, 2, 3, 4]) {
       for (const result of ['EXISTS', 'NOT_FOUND', 'UNKNOWN'] as const) {
         out.push([`reconcile ${result} seq=${seq}`, decideReconcile(state, { seq, result }, now).write]);
       }
-      for (const purpose of ['RECREATE', 'REDISPATCH'] as const) {
-        for (const outcome of [{ result: 'CREATED' }, { result: 'ALREADY_EXISTS' }] as const) {
-          const order = { seq, purpose, claim: state.watchdogAt ?? T0 };
-          out.push([`enqueue ${purpose} ${outcome.result}`, decideEnqueueResult(state, order, outcome, now).write]);
-        }
+      const outcomes = [
+        { result: 'CREATED' },
+        { result: 'ALREADY_EXISTS' },
+        { result: 'FAILED', error: { code: 'UNAVAILABLE', message: 'x' } },
+      ] as const;
+      for (const outcome of outcomes) {
+        out.push([`enqueue seq=${seq} ${outcome.result}`, decideEnqueueResult(state, { seq }, outcome, now).write]);
       }
     }
     out.push(['reconcile planning', decideReconcile(state, null, now).write]);
@@ -185,6 +197,17 @@ describe('properties over the decision grid', () => {
       expect(d.seq - state.dispatch.seq, label).toBeGreaterThanOrEqual(0);
       expect(d.seq - state.dispatch.seq, label).toBeLessThanOrEqual(1);
       expect(d.deliveredSeq, label).toBeGreaterThanOrEqual(state.dispatch.deliveredSeq);
+    }
+  });
+
+  it.each(grid())('$name: only business outcomes fail a request; dispatch never does (ADR-017)', ({ state }) => {
+    for (const [label, write] of allWrites(state)) {
+      if (write === null || state.status === 'FAILED' || write.next.status !== 'FAILED') continue;
+      expect(['S6', 'S7', 'S8'], label).toContain(write.transition);
+      expect(write.next.statusReason, label).not.toBe('DISPATCH_EXHAUSTED');
+      if (write.next.statusReason === 'ATTEMPTS_EXHAUSTED') {
+        expect(write.next.processing.attempts, label).toBeGreaterThanOrEqual(write.next.processing.maxAttempts);
+      }
     }
   });
 
