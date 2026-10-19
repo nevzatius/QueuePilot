@@ -26,12 +26,12 @@ Status values: `todo | active | review | done | blocked`.
 | WP | Owner | Depends on | Status |
 |---|---|---|---|
 | A0 Agent bootstrap | Claude | – | done (2026-10-19) |
-| A1 Contracts | Claude | A0 | todo |
-| A2 Domain | Claude | A1 | todo |
+| A1 Contracts | Claude | A0 | done (merged `d45ed59`) |
+| A2 Domain | Claude | A1 | done (merged 2026-10-19; includes A2.1 verify fix) |
 | A3 Web | Claude | A1 (mock API until B3) | todo |
 | A4 Reviews and integration | Claude | – | continuous |
-| B1 Foundation and CI | Codex | A0 | todo |
-| B2 Cloud spike and infra scripts | Codex (scripts) + owner (runs) | B1 | todo |
+| B1 Foundation and CI | Codex | A0 | done (merged `c7c6e00`) |
+| B2 Cloud spike and infra scripts | Codex (scripts) + owner (runs) | B1 | scripts merged (2026-10-19); **C1–C9 NOT RUN**, owner gate open |
 | B3 Platform, auth and ingestion | Codex | A1, A2, B1 | todo |
 | B4 Queue, worker and reconciler | Codex | A2, B3 | todo |
 | B5 Redis limits, quotas and cache | Codex | B3 | todo |
@@ -43,7 +43,8 @@ Status values: `todo | active | review | done | blocked`.
 - **Accept:** type-checks. Used unchanged by A3, B3 and B4. Cross-review: Codex.
 
 ### A2 Domain: `packages/domain`
-- `decideDelivery`, `decideReconcile` (ARCHITECTURE §6), idempotency expiry, canonical fingerprint, versioned triage rules (§17).
+- `decideDelivery`, `decideReconcile`, `decideEnqueueResult`, `decideVerifyResult` (ARCHITECTURE §6), idempotency expiry, canonical fingerprint, versioned triage rules (§17).
+- **Delivered:** B4 adapters must follow the "Reconciler adapter flow" in §6 (claim, VERIFY_TASK re-probe) and read budgets from `processing.maxAttempts` / `dispatch.maxSeq`.
 - **Accept:** one table-driven test for each row of S1–S12 and both decision tables. No IO imports. Cross-review: Codex.
 
 ### A3 Web: `apps/web`
@@ -115,6 +116,12 @@ Additional B4 test: a getTask PERMISSION_DENIED changes no state (ADR-011).
 - Deploy and shutdown scripts, budget alert setup, README EN/TR drafts.
 - **Accept:** a fresh-project run is reproducible, the shutdown script has been tried once, and the README contains measured numbers only.
 
+**B2 merge notes.** Offline: `node --test infra/offline.test.mjs infra/targeted.test.mjs` = 31 pass. Cloud-run steps need the owner and the approvals listed in `infra/README.md`. B2 does not create the main Scheduler job until the B4 worker image is approved. Note: `infra/` tests are not wired into `pnpm test` or CI (follow-up for Codex, B3 prelude).
+
 ## CCR log
 
 _(none)_
+
+## Integration log
+
+- 2026-10-19: A2 (`5c71837`) and B2 (`5b1b556`) merged with `--no-ff`. Combined: lint, typecheck, build pass; 449 unit tests (18 files). ADR-014 to ADR-016 added from A2/B2 handoffs.

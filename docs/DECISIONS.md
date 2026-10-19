@@ -80,3 +80,21 @@ Status values: Accepted, Pending verification, Superseded.
 - **Why:** Avoids concurrent edits and drift in shared state.
 - **Alternatives:** section-based multiple writers (v0.2), rejected.
 - **Revisit when:** more than two agents work concurrently. Status: Accepted.
+
+### ADR-014 (A2) Verified ALREADY_EXISTS and optimistic claim
+- **Decision:** `ALREADY_EXISTS` from `createTask` is never proof of a tombstone. It yields `VERIFY_TASK`: re-probe the same `seq`, then `decideVerifyResult`. Only NOT_FOUND after it, under the still-current claim, proves absence (I7). The pre-`createTask` decision commits `watchdogAt = now+1min` as a claim; later decisions are NOOPs if the request is terminal, `seq` moved, the claim was lost or a lease is valid. A `REDISPATCH` generation that answers ALREADY_EXISTS then NOT_FOUND is a `RECHECK`, not proof. `seq` increments at most once per pass.
+- **Why:** A claim fences Firestore writes, not queue side effects. A stalled claimant can create the task after a newer claimant probed NOT_FOUND; treating that ALREADY_EXISTS as a tombstone would redispatch a live task and burn `seq`.
+- **Alternatives:** trust ALREADY_EXISTS as a tombstone (original step 6), rejected.
+- **Revisit when:** C1/C2 contradict the queue assumptions (getTask visibility right after create; NOT_FOUND after completion). Status: Accepted; live verification pending.
+
+### ADR-015 (A2) Retry budget ceilings and S12 exceptions
+- **Decision:** `processing.maxAttempts` and `dispatch.maxSeq` are stored absolute ceilings (MVP: 5 and 3). S12 admin retry (P1) is the only exit from a terminal status (FAILED only) and the only writer that raises the ceilings: `maxAttempts = attempts + 5`, `maxSeq = seq + 3 - 1` after `seq++`. Counters never decrease.
+- **Why:** Lets S12 grant a fresh budget without weakening I3/I5 for the MVP, where there is a single epoch.
+- **Alternatives:** resetting counters on retry, rejected (loses history, breaks seq-scoped task names).
+- **Revisit when:** S12 is enabled. That needs its own ADR on I3 and I5 (per epoch). Status: Accepted for the domain model; S12 itself is not active.
+
+### ADR-016 (B2) Gated, offline-first infrastructure scripts
+- **Decision:** `infra/` scripts are dry-run by default and need explicit approvals for project ID, the irreversible `europe-west1` Firestore location, and a pinned B4 worker image before the main Scheduler job is created. Provisioning pauses existing active queues/jobs and verifies it. TTL and single-field exemptions are configured together. Index/field operations report PENDING until read back.
+- **Why:** Prevents accidental paid or irreversible actions and Scheduler runs against skeleton services.
+- **Alternatives:** a single unattended apply, rejected.
+- **Revisit when:** C1–C9 are run in the demo project. Status: Accepted; cloud behaviour NOT VERIFIED (C1–C9 pending, ADR-003/007/011).
