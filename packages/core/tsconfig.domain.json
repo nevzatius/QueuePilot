@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "../domain/src", "outDir": "dist/domain-types" },
+  "include": ["../domain/src/**/*.ts"],
+  "references": [{ "path": "../../tsconfig.contracts.json" }]
+}

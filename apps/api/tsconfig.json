@@ -1,6 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "rootDir": "src", "outDir": "dist/types" },
-  "include": ["src/**/*.ts"],
+  "compilerOptions": { "rootDir": ".", "outDir": "dist/types" },
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.integration.config.ts"],
   "references": [{ "path": "../../packages/core" }]
 }
