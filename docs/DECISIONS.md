@@ -116,3 +116,47 @@ Status values: Accepted, Pending verification, Superseded.
 - **Consequences:** Rare ambiguous failures can burn quota until midnight UTC. Redis failure on an enforced tenant is `503 QUOTA_UNAVAILABLE` (ADR-009), replays keep working.
 - **Alternatives:** release on every failure (over-admits); a Firestore counter (P2, ADR-009).
 - **Revisit when:** burnt-slot rates are measured against real Upstash. Status: Accepted (2026-10-20). Lua scripts verified only against a test double; **real Redis NOT RUN**.
+
+### ADR-019 (B9) Free-tier deployment platform: Firebase Spark + Render free + Upstash QStash/Redis
+- **Status:** Accepted (owner decisions 2026-10-20). Platform behaviour is measured only by a disposable spike (see Evidence). The QueuePilot adapters are not written or run yet.
+- **Context:** The owner has no billing account or card, so the GCP path (Cloud Run, Cloud Tasks, Cloud Scheduler, Secret Manager, Cloud Storage; all need billing) is unavailable. The goal is an end-to-end deployment on free tiers only, for production experience.
+- **Decision:**
+  - Stack: Firebase Spark (Auth, Firestore in `europe-west1`, static Hosting) + two Render free web services (API and worker, built from the B7 Dockerfiles) + Upstash QStash (queue and scheduler) + a new Upstash Redis database named `queuepilot` (the spike database is not reused).
+  - API and worker stay separate services (ADR-001). The worker runs as an HTTP web service receiving QStash pushes, because the Render background worker type is not free.
+  - New `QStashQueue` adapter behind `QueuePort` / the `DispatchQueue` factory. Firestore stays the source of truth. `probe()` is a constant `UNKNOWN`, which ADR-011/014/017 already allow (UNKNOWN places an order). ADR-017 behaviour (dispatch is a wake-up, `seq`, attention orders, lease I4, attempt budget I5, terminal absorption I3) is unchanged. A QStash publish answered 201, including `deduplicated:true`, counts as CREATED, like `ALREADY_EXISTS`.
+  - The Cloud Tasks adapter stays supported and selectable by configuration (paid GCP path).
+  - Scheduler: a QStash schedule ticks the reconciler every 60 minutes, plus a throttled opportunistic reconcile on incoming requests. Liveness after a lost wake-up is bounded by roughly one tick (or the next request), not by seconds.
+  - Sandbox quota 300 per day, `openSignup=false`. Redis rate limiting and quotas are unchanged (ADR-009, ADR-018).
+  - Free-quota safety: fail closed; `RESOURCE_EXHAUSTED` is classified, not treated as a generic retryable error; QStash retries limited to 2-3; the worker returns `Retry-After` on 409 and 503; the dashboard polls every 30 s; stuck counts use `count()` aggregations.
+- **Evidence** (measured 2026-10-20 in a disposable spike, repo `nevzatius/render-qstash-spike`, commit `402c284`; the spike service is deleted; none of this is a QueuePilot measurement):
+  - QStash publish returns 201. A duplicate deduplication id also returns **201** (not 202) with `"deduplicated":true` in the body, and only one delivery happens (n=1). The adapter must read the `deduplicated` field and treat both as CREATED.
+  - Every delivery and every retry counts as a message: the MESSAGES counter went 8 -> 14 for `Upstash-Retries: 5`, which produced 6 deliveries (n=1). The free limit is 1,000 messages per day. **Whether retries count toward the daily limit was not directly verified.**
+  - Default retry backoff observed about 12 s, then about 154 s (n=1 run). `Retry-After` is honoured (30 s and 5 s tested, within about 1 s; n=1 each). `Upstash-Retries: 5` is accepted on the free plan.
+  - Default HTTP timeout is 15 min. `Upstash-Timeout` needs a Go duration with a unit (`10s`; plain `10` gives 400). It is applied: a 20 s handler with `Upstash-Timeout: 10s` was aborted at 9965 ms (n=1). The server kept running and logged 200, so worker lease/idempotency must tolerate work that finishes after QStash gave up.
+  - Render free services sleep after 15 min idle. Direct request to a sleeping service: HTTP 200 JSON, no interstitial, total 13.7 s, process uptime 7.6 s (n=1; Render docs say up to about 50 s, so keep margin). QStash publish to a sleeping service: delivered on the first attempt, `retried=0`, uptime 8.3 s (n=1).
+  - Render proxy chain: a clean request has `X-Forwarded-For` = `<client-ip>, <cloudflare-ip 172.x>, <render-internal 10.x>` and socket address 127.0.0.1 (n=1). Render does **not** strip a spoofed `X-Forwarded-For`: the spoofed value is prepended and the real client follows it (n=1). Counting the socket as hop 0, the real client is the 4th address from the right, so Fastify `trustProxy` must be the number **3** (never `true`), exposed as env `TRUST_PROXY_HOPS`. Re-verify with a spoofed-header test in B9-4 and re-measure if the platform changes. No real IP address belongs in the repo; use `<client-ip>`.
+  - Upstash Redis free: 500k commands/month, 250 MB. Cold TCP connect about 404 ms, warm 24-40 ms, commands about 2 ms (small sample). QueuePilot's 100 ms Redis connect timeout is too tight for cold starts: raise it or pre-warm.
+  - Firebase Spark: 50K reads and 20K writes per day; exceeding a quota shuts the product off. Cloud Storage, Cloud Run, Cloud Tasks, Cloud Scheduler and Secret Manager need billing, so they are out. (Published limits, not measured.)
+  - Render free: 750 instance hours per month per workspace, ephemeral filesystem; the background worker type is not free. (Published limits, not measured.)
+- **Alternatives considered:**
+  - Option B, Firestore outbox polled by a scheduler: rejected. Liveness would equal the tick interval and every poll spends the 50K daily read budget.
+  - Option C, direct signed HTTP wake of the worker plus a Firestore outbox: fallback only, built only if delivery to a sleeping service breaks in production.
+  - Paid GCP: unavailable (no billing account); stays supported behind the factory.
+- **Consequences:**
+  - Cold starts add roughly 8-14 s (up to about 50 s by Render docs) to the first request and to wake-ups; the UI needs a "service waking up" state.
+  - Delivery stays at-least-once, plus work that finishes after QStash timed out. Exactly-once and throughput are not claimed.
+  - Daily budgets (1,000 QStash messages, 50K reads, 20K writes, 500k Redis commands per month, 750 instance hours) cap the demo, hence quota 300 and fail-closed behaviour.
+  - Free-tier terms can change; this is a showcase, not a production claim.
+- **Rollback / shutdown:** Delete the QStash schedule and queue (B9-7 script), suspend or delete both Render services, delete the Upstash `queuepilot` database, disable Firebase Hosting. Firestore data is synthetic and can be deleted; the Firestore location cannot be changed after creation. Switching back to Cloud Tasks is a configuration change through the adapter factory once billing exists.
+- **Work packages:**
+  - B9-1 Config, production guard, adapter factory. Accept: queue backend selectable by env, production guard rejects unsafe or missing config, existing tests green.
+  - B9-2 `QStashQueue` adapter and `LocalDispatchQueue` QStash profile. Accept: reads `deduplicated`, sets `Upstash-Retries` and `Upstash-Timeout` with a unit, 201 and deduplicated both map to CREATED, table-driven tests.
+  - B9-3 Worker QStash signature verifier, `Retry-After` on 409/503. Accept: bad or missing signature rejected, current and next signing keys accepted, completion after a QStash timeout stays safe.
+  - B9-4 CORS allowlist and trustProxy/IP decision. Accept: `TRUST_PROXY_HOPS` env, spoofing test shows the client IP cannot be forged.
+  - B9-5 Firestore read budget. Accept: stuck count via `count()`, throttled opportunistic reconcile, `RESOURCE_EXHAUSTED` classified, Redis connect timeout raised or pre-warmed.
+  - B9-6 Web. Accept: cross-origin API base URL, 30 s polling, "service waking up" UX.
+  - B9-7 Deployment files and scripts. Accept: `render.yaml`, `firebase.json`, QStash setup and shutdown scripts, preflight free profile, `seed-demo` limit parameter; dry-run by default (ADR-016).
+  - B9-8 Runbook and `PROJECT_STATE.md`. Accept: the owner can follow the free-tier path step by step.
+  - B9-9 Owner manual setup and live verification. Accept: one request reaches COMPLETED on the live stack; Evidence items re-measured against QueuePilot.
+- **Re-measure when:** Render changes the proxy chain or sleep behaviour; QStash or Upstash change free limits or retry/deduplication semantics; whether retries count toward the daily limit gets verified; sleeping-service delivery fails in production (then Option C); the first real QueuePilot cold-start and message-count numbers exist (B9-9).
+- **Revisit when:** billing becomes available. Status: Accepted; platform behaviour NOT VERIFIED for QueuePilot until B9-9.

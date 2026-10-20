@@ -1,57 +1,60 @@
 # Project State
 
 Single writer: Claude Code (ADR-013). Keep this file under 60 lines.
-Last updated: 2026-10-20 (session 4), by Claude Code (B7 pre-deployment hardening on `claude/b7-predeploy-hardening`, not merged).
+Last updated: 2026-10-20 (session 5), by Claude Code (B9-0: ADR-019, docs only, branch `claude/b9-0-adr-019`).
 
 ## Phase
 
-Architecture v0.2 frozen (ADR-009 to ADR-018). Merged on `main` (`7e6eb41`): B1, A1, A2/A2.2, B2 (offline scripts), A3 (web), B3, B4, B5, B6 (local).
+Architecture v0.2 frozen (ADR-009 to ADR-018), plus ADR-019 (free-tier platform). `main` = `ac6bc2b`: B1-B6 and B7 (PR #1, merged) are in.
 Remote: private `github.com/nevzatius/QueuePilot`. No cloud resource exists. The local MVP works end to end on emulators.
-B7 cloud deployment not started. Pre-deployment hardening is on feature branch `claude/b7-predeploy-hardening` (pushed, not merged; it contains
-`claude/b7-preflight`): Dockerfiles, CI image job, guarded deploy/shutdown, read-only cloud preflight, grant-role, seed-demo. Owner runbook: `docs/DEPLOYMENT_RUNBOOK.md`.
+B8 analysis done. B8.5 spike done (disposable repo `nevzatius/render-qstash-spike`, `402c284`, service deleted).
+The owner has no billing account, so the target is free tiers only: Firebase Spark + Render free + Upstash QStash + Upstash Redis `queuepilot`.
+Cloud Tasks stays supported behind the queue factory. Owner runbook: `docs/DEPLOYMENT_RUNBOOK.md` (GCP path; free path comes in B9-8).
 
 ## Milestones
 
 | ID | Gate | Status |
 |---|---|---|
 | M1 | A1 + B1 merged, CI green | **done** |
-| M2 | C1–C9 verified, skeleton deployed | **C1–C9 NOT RUN (owner)**; control matrix ready in the runbook §D |
+| M2 | C1-C9 verified, skeleton deployed | **C1-C9 NOT RUN** (GCP path needs billing; free path replaces it in B9-9) |
 | M3 | B3 on emulator | done |
 | M4 | B4 COMPLETED end to end | **local: done**; cloud: not run |
-| M5 | B5 Redis with fallbacks | **real-Redis suites PASS in CI**; cloud/Upstash not run |
-| M6 | B6 baseline/spike/Redis on-off, 3 reps | **local done** (`tests/load`); real-Redis load variant and k6 NOT RUN |
+| M5 | B5 Redis with fallbacks | **real-Redis suites PASS in CI**; Upstash not run |
+| M6 | B6 baseline/spike/Redis on-off, 3 reps | **local done** (`tests/load`); real-Redis load and k6 NOT RUN |
 | M7 | README EN/TR with measured results | **done**; numbers are local and labelled so |
 
-## Checks (2026-10-20, session 4, B7 branch)
+## B9 plan (ADR-019)
 
-- Local (Windows): lint, typecheck, build pass; `pnpm test` 551 node + 35 web + 59 node:test (31 infra + 28 owner-script) pass.
-- Emulator: `tests/integration/owner-scripts.test.ts` 3/3 (Firestore + Auth emulators, alternate ports). Full `pnpm test:integration` not run locally (no Redis).
-- Runtime file set: `pnpm deploy --prod --legacy` output without `@queuepilot` + `dist/server.js`, production-shaped env: /health, 4 startup guards, worker 403, SIGTERM exit 0 (14/14, Windows, no Docker).
-- Container images: built and smoke-run in CI only (Docker not installed locally). Run IDs in the session report / Actions tab.
-- Security review of the branch (read-only agent): no real findings; low-severity hardening applied.
+B9-1 config/production guard/adapter factory. B9-2 `QStashQueue` + `LocalDispatchQueue` QStash profile. B9-3 worker QStash signature verifier, `Retry-After` on 409/503.
+B9-4 CORS allowlist, trustProxy (`TRUST_PROXY_HOPS=3`) with spoofing test. B9-5 Firestore read budget (`count()`, throttled reconcile, `RESOURCE_EXHAUSTED`, Redis connect timeout).
+B9-6 web: cross-origin API URL, 30 s polling, "service waking up". B9-7 `render.yaml`, `firebase.json`, QStash setup/shutdown scripts, preflight free profile, seed-demo limit.
+B9-8 runbook + state. B9-9 owner manual setup and live verification.
+
+## Checks
+
+Last full run (2026-10-20, B7 branch, now merged): lint, typecheck, build, 551 node + 35 web + 59 node:test pass; images smoke-run in CI only. B9-0 is docs only.
 
 ## Blockers (owner actions)
 
-1. GCP demo project, billing, budget alerts, region `europe-west1` approval (irreversible, ADR-007); then C1–C9 per runbook §D.
-2. Review and merge `claude/b7-predeploy-hardening` into `main` (and push `main`): owner decision. Unproven until a real project exists: images against real services,
-   owner scripts against real Firestore/Identity Toolkit, cloud preflight against real APIs.
-3. Upstash (or other TLS Redis) account and secret version; Firebase Google provider and authorized domains.
-4. License choice: none added.
-5. Orphan `java` Firestore emulators hold 127.0.0.1:8080/9150 (started 16:12 by the parallel session) and 127.0.0.1:18381 (this session's emulator run).
-   Agents do not stop processes: stop them yourself if you need those ports. Untracked leftovers `apps/api/.deploy-test/` and `node_modules/.qp-scratch-deploy-test/`
-   (parallel session) and `dist/qp-deploy-check-{api,worker}/` (this session's runtime check) are ignored or empty and can be deleted by you.
-6. pnpm build scripts `re2` and `@firebase/util` stay unapproved (images do not need them; `re2` is absent from the runtime image).
+1. Accounts, no card: Firebase project (Spark; Firestore `europe-west1` is irreversible), Render, Upstash (QStash + new Redis `queuepilot`), install gcloud CLI.
+2. Firebase Google provider and authorized domains.
+3. License choice: none added.
+4. Orphan `java` Firestore emulators may still hold local ports (8080/9150/18381); agents do not stop processes. Untracked `PROJECT_CONTEXT.md` is not committed.
+5. pnpm build scripts `re2` and `@firebase/util` stay unapproved (images do not need them).
 
 ## Known risks
 
-- Cloud Tasks semantics behind ADR-003/011/017 are unverified until C1–C9; `CloudTasksQueue` (v2 REST) is unverified live.
-- Redis client timeouts are 100 ms; a remote Redis may fail closed more often than local until C8 measures latency.
-- `infra/apply.mjs --stage iam` has no public-API approval of its own; use `scripts/deploy.mjs` (which requires `--approve-public-api`).
-- Two sessions edited this working tree in parallel today. Before integrating, check `git worktree list`/branches and avoid concurrent sessions on one checkout.
-- `pnpm deploy` fails on Windows when the target is on another drive than the pnpm store (path join bug); use a same-drive target or Linux/Docker.
-- `scripts/integration.mjs` and `emulators:exec` leave orphan emulators on Windows; CI (Linux) is unaffected.
+- QStash and Render free behaviour is measured only in the spike (ADR-019 Evidence, mostly n=1). Whether retries count toward the 1,000/day message limit is unverified.
+- `QStashQueue`, Cloud Tasks semantics and `CloudTasksQueue` (v2 REST) are unverified live.
+- Redis client timeouts are 100 ms; Upstash cold connect was about 404 ms (B9-5).
+- Spark quotas (50K reads, 20K writes per day) shut the product off when exceeded.
+- Avoid concurrent sessions on one checkout. `pnpm deploy` fails on Windows across drives; `scripts/integration.mjs` leaves orphan emulators on Windows.
+
+## Open follow-ups from the B7 review
+
+F2, F3, F7, N1 (descriptions are in the B7 review report, not in the repo; to be written into TASKS.md when triaged), and T1-T5:
+T3 `.claude/agents/architecture-reviewer.md` is stale against ADR-017; T4 stale READMEs and TASKS notes; T5 metrics stuck-read cost (relevant to B9-5). T1, T2 per the review report.
 
 ## Next step
 
-1. Owner: review the branch and decide on merge; decide on the demo project, billing and budget; then follow `docs/DEPLOYMENT_RUNBOOK.md` A–I.
-2. With a project: `scripts/preflight.mjs --run`, stages via `scripts/deploy.mjs`, C1–C9, seed + grant-role (dry run first), one real `scripts/shutdown.mjs`.
+1. Review and merge the B9-0 PR (ADR-019). 2. Start B9-1 (config, production guard, adapter factory). 3. Owner: create the accounts in Blockers 1-2 in parallel.
