@@ -6,7 +6,9 @@ export const logOptions: LoggerOptions = {
   redact: {
     paths: ['authorization', 'cookie', 'cookies', 'description', 'req.headers.authorization',
       'req.headers.cookie', 'headers.authorization', 'headers.cookie', 'body.description',
-      'req.body.description', '*.description', '*.authorization', '*.cookies'],
+      'req.body.description', '*.description', '*.authorization', '*.cookies',
+      'QSTASH_TOKEN', 'QSTASH_CURRENT_SIGNING_KEY', 'QSTASH_NEXT_SIGNING_KEY', 'REDIS_URL',
+      '*.QSTASH_TOKEN', '*.QSTASH_CURRENT_SIGNING_KEY', '*.QSTASH_NEXT_SIGNING_KEY', '*.REDIS_URL'],
     censor: '[REDACTED]',
   },
   // Never log raw request URLs, query strings, tokens or bodies.

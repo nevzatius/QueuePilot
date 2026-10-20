@@ -10,6 +10,8 @@ export function createDispatchQueue(config: Config, clock: Clock, log: Logger) {
     workerUrl: config.QP_WORKER_URL, audience: config.QP_TASKS_OIDC_AUDIENCE!,
     serviceAccount: config.QP_TASKS_INVOKER_SA!, deadlineSeconds: config.QP_TASK_DISPATCH_DEADLINE_SECONDS,
   }, log);
+  // No silent fallback: selecting qstash before its adapter exists must stop startup.
+  if (config.QP_QUEUE_ADAPTER === 'qstash') throw new Error('QP_QUEUE_ADAPTER=qstash is not available yet: the QStashQueue adapter lands in B9-2');
   if (config.QP_ENV === 'production') throw new Error('Production requires Cloud Tasks');
   return new LocalDispatchQueue(clock, { environment: config.QP_ENV, faults: {
     ...(process.env.QP_FAULT_CREATE === 'fail' && { create: 'fail' }),
