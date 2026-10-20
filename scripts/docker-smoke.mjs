@@ -32,9 +32,12 @@ try {
   const listing = inImage('cd /app && ls -A && echo --- && ls -A dist');
   check(listing.status === 0 && listing.stdout.trim() === 'dist\nnode_modules\npackage.json\n---\nserver.js\nserver.js.map',
     '/app holds only package.json, node_modules and dist/server.js(.map)');
-  const stray = inImage("find /app \\( -name '.env*' -o -name '.git' -o -name '*.pem' -o -name '*.key' -o -name 'service-account*.json' -o -name '*.test.*' \\) -print -quit; "
+  // Repository files can reach /app only outside node_modules, or inside it as workspace packages; registry packages
+  // under node_modules legitimately ship their own *.test.d.ts and fixtures, so they are not scanned by name.
+  const stray = inImage("find /app -path /app/node_modules -prune -o \\( -name '.env*' -o -name '.git' -o -name '*.pem' -o -name '*.key' "
+    + "-o -name '*credentials*.json' -o -name 'service-account*.json' -o -name '*.test.*' \\) -print; "
     + 'ls -d /app/node_modules/@queuepilot /app/node_modules/.pnpm/re2@* 2>/dev/null; true');
-  check(stray.status === 0 && stray.stdout.trim() === '', 'no env/key/git/test files, no workspace sources, no re2 native module', stray.stdout.trim().split('\n')[0]);
+  check(stray.status === 0 && stray.stdout.trim() === '', 'no repository env/key/git/test files, no workspace sources, no re2 native module', stray.stdout.trim().split('\n')[0]);
   const writable = inImage('test -w /app/dist/server.js || test -w /app/node_modules || touch /app/smoke 2>/dev/null; echo $?');
   check(writable.stdout.trim() === '1', 'application files are read-only for the runtime user');
 

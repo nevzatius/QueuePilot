@@ -37,6 +37,9 @@ export function shutdownTargets(config) {
 const INVOKER = 'roles/run.invoker';
 const PUBLIC = 'allUsers';
 const isPublicInvoker = (policy) => (policy.bindings ?? []).some((b) => b.role === INVOKER && !b.condition && (b.members ?? []).includes(PUBLIC));
+/** Any invoker binding, conditional or not, that still names a public principal. Never reported as private. */
+const residualPublic = (policy) => (policy.bindings ?? []).some((b) => b.role === INVOKER
+  && (b.members ?? []).some((m) => m === PUBLIC || m === 'allAuthenticatedUsers'));
 
 /** Pure: the policy without allUsers in unconditional run.invoker bindings. Everything else, including etag, is kept. */
 export function withoutPublicInvoker(policy) {
@@ -52,10 +55,12 @@ async function revokePublicApi(client, config, io) {
   const read = () => getOrAbsent(client, 'run', `${service.path}:getIamPolicy?options.requestedPolicyVersion=3`);
   const current = await read();
   if (!current) { io.out('qp-api: absent, no public access to revoke'); return; }
-  if (!isPublicInvoker(current)) { io.out('qp-api: no allUsers invoker binding (already private)'); return; }
-  await client('run', `${service.path}:setIamPolicy`, 'POST', { policy: withoutPublicInvoker(current) });
-  const after = await read();
+  if (isPublicInvoker(current)) await client('run', `${service.path}:setIamPolicy`, 'POST', { policy: withoutPublicInvoker(current) });
+  const after = isPublicInvoker(current) ? await read() : current;
   if (!after || isPublicInvoker(after)) throw new Error('public binding still present after update');
+  // Conditional or allAuthenticatedUsers invoker bindings are never created by infra/spec.mjs; they need a human decision.
+  if (residualPublic(after)) throw new Error('a conditional or allAuthenticatedUsers invoker binding remains; review it manually');
+  if (after === current) { io.out('qp-api: no public invoker binding (already private)'); return; }
   io.out('qp-api: allUsers invoker removed (confirmed by re-read). Re-run the `iam` stage to expose it again.');
 }
 

@@ -168,8 +168,12 @@ test('grant-role: promotes an active member with the read precondition and only 
 });
 
 test('cloud mode: a project without the demo label or with another identity is refused before any Firestore access', async () => {
-  const ok = { projectId: 'qp-demo-12345', lifecycleState: 'ACTIVE', labels: { 'queuepilot-environment': 'demo' } };
-  const cloudArgs = ['--project', 'qp-demo-12345', '--tenant', 'sandbox', '--uid', 'user-1', '--apply', '--approve-project', 'qp-demo-12345', '--approve-uid', 'user-1'];
+  const ok = { projectId: 'qp-demo-12345', projectNumber: '123456789012', lifecycleState: 'ACTIVE', labels: { 'queuepilot-environment': 'demo' } };
+  const unpinned = ['--project', 'qp-demo-12345', '--tenant', 'sandbox', '--uid', 'user-1', '--apply', '--approve-project', 'qp-demo-12345', '--approve-uid', 'user-1'];
+  const cloudArgs = [...unpinned, '--project-number', '123456789012'];
+  refuses(() => parseGrantArgs(unpinned, {}), EXIT.REFUSED); // cloud writes pin the project number
+  refuses(() => parseSeedArgs(['--project', 'qp-demo-12345', '--open-signup', 'false', '--apply', '--approve-project', 'qp-demo-12345'], {}), EXIT.REFUSED);
+  assert.equal(parseGrantArgs(unpinned.slice(0, 6), {}).apply, false); // a cloud dry run does not need it
   for (const info of [{ ...ok, labels: {} }, { ...ok, lifecycleState: 'DELETE_REQUESTED' }, { ...ok, projectId: 'someone-else-1' }]) {
     const store = new FakeStore({ 'tenants/sandbox': active });
     const d = deps(store, { cloudClient: () => async () => info });
@@ -178,9 +182,9 @@ test('cloud mode: a project without the demo label or with another identity is r
     assert.deepEqual(d.identityDouble.queries, [], 'no Auth lookup before the project is verified');
   }
   const mismatch = new FakeStore({ 'tenants/sandbox': active });
-  await rejects(() => grantRole(parseGrantArgs([...cloudArgs, '--project-number', '999999999999'], {}), deps(mismatch, { cloudClient: () => async () => ({ ...ok, projectNumber: '123456789012' }) })), EXIT.REFUSED);
+  await rejects(() => grantRole(parseGrantArgs([...unpinned, '--project-number', '999999999999'], {}), deps(mismatch, { cloudClient: () => async () => ok })), EXIT.REFUSED);
   assert.deepEqual(mismatch.reads, []);
-  refuses(() => parseGrantArgs([...cloudArgs, '--project-number', 'abc'], {}), EXIT.USAGE);
+  refuses(() => parseGrantArgs([...unpinned, '--project-number', 'abc'], {}), EXIT.USAGE);
   const store = new FakeStore({ 'tenants/sandbox': active });
   assert.equal(await grantRole(parseGrantArgs(cloudArgs, {}), deps(store, { cloudClient: () => async () => ok })), EXIT.OK);
   assert.equal(store.writes.length, 1);
@@ -453,6 +457,13 @@ test('shutdown --revoke-public-api: removes only allUsers from unconditional run
   await runShutdown(shut(shutApply), { io: io(), readFile: () => cfgText, client: () => plain.client });
   assert.ok(!plain.calls.some((c) => c.includes(' run ')), 'without the flag qp-api IAM is never read or changed');
 
+  for (const residual of [[{ role: 'roles/run.invoker', members: ['allAuthenticatedUsers'] }],
+    [{ role: 'roles/run.invoker', members: ['allUsers'], condition: { title: 'c', expression: 'true' } }]]) {
+    const cloudResidual = revokeCloud({ policy: { etag: 'e1', bindings: residual } });
+    const out = { io: io(), readFile: () => cfgText, client: () => cloudResidual.client };
+    assert.equal(await runShutdown(shut([...shutApply, '--revoke-public-api']), out), EXIT.IO, 'residual public bindings are never reported as private');
+    assert.ok(!cloudResidual.calls.some((c) => c.includes(':setIamPolicy')), 'bindings it may not edit are left for a human');
+  }
   const priv = revokeCloud({ policy: { etag: 'e1', bindings: [] } });
   assert.equal(await runShutdown(shut([...shutApply, '--revoke-public-api']), { io: io(), readFile: () => cfgText, client: () => priv.client }), EXIT.OK);
   assert.ok(!priv.calls.some((c) => c.includes(':setIamPolicy')));

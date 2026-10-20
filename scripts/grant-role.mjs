@@ -10,7 +10,7 @@ import { EMAIL, EXIT, FirestoreRest, IdentityRest, ScriptError, TENANT_ID, UID, 
 // Step 2, apply: repeats every check and writes only if --approve-uid equals the uid printed in step 1.
 //
 //   node scripts/grant-role.mjs --project P --tenant T (--uid UID | --email EMAIL)
-//   node scripts/grant-role.mjs --project P --tenant T (--uid UID | --email EMAIL) --apply --approve-project P --approve-uid UID [--project-number N]
+//   node scripts/grant-role.mjs --project P --tenant T (--uid UID | --email EMAIL) --apply --approve-project P --approve-uid UID --project-number N
 //
 // Credentials: the owner's own `gcloud auth login` token, exactly like infra/apply.mjs (no key files).
 // Emulator: set FIRESTORE_EMULATOR_HOST and FIREBASE_AUTH_EMULATOR_HOST and use a demo-* project.
@@ -34,6 +34,9 @@ export function parseGrantArgs(argv, env) {
     throw new ScriptError(EXIT.REFUSED, 'Writes require --approve-uid=<uid printed by the dry run>');
   }
   if (values['project-number'] !== undefined && !/^[1-9][0-9]{5,19}$/.test(values['project-number'])) throw new ScriptError(EXIT.USAGE, 'Invalid --project-number');
+  if (target.mode === 'cloud' && values.apply && values['project-number'] === undefined) {
+    throw new ScriptError(EXIT.REFUSED, 'Cloud writes require --project-number=<number> (pinned like infra/apply.mjs)');
+  }
   return { target, tenant: values.tenant, uid: values.uid, email: values.email, approveUid: values['approve-uid'], apply: values.apply, projectNumber: values['project-number'] };
 }
 

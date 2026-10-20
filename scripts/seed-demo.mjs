@@ -7,7 +7,7 @@ import { EXIT, FirestoreRest, ScriptError, parseOptions, resolveTarget, runCli, 
 // the admin from scripts/grant-role.mjs.
 //
 //   node scripts/seed-demo.mjs --project P --open-signup true|false                  (dry run)
-//   node scripts/seed-demo.mjs --project P --open-signup false --apply --approve-project P
+//   node scripts/seed-demo.mjs --project P --open-signup false --apply --approve-project P [--project-number N, required for a real project]
 //
 // Identifiers are fixed and documented: tenant `sandbox`. Create-only: an existing document is
 // compared and never overwritten, so reruns are idempotent and drift is reported, not "fixed".
@@ -31,6 +31,9 @@ export function parseSeedArgs(argv, env) {
   }
   const target = resolveTarget({ project: values.project, approveProject: values['approve-project'], apply: values.apply, env });
   if (values['project-number'] !== undefined && !/^[1-9][0-9]{5,19}$/.test(values['project-number'])) throw new ScriptError(EXIT.USAGE, 'Invalid --project-number');
+  if (target.mode === 'cloud' && values.apply && values['project-number'] === undefined) {
+    throw new ScriptError(EXIT.REFUSED, 'Cloud writes require --project-number=<number> (pinned like infra/apply.mjs)');
+  }
   return { target, openSignup: values['open-signup'] === 'true', apply: values.apply, projectNumber: values['project-number'] };
 }
 
