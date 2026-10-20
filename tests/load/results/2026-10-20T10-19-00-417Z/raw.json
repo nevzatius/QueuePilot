@@ -1,0 +1,1719 @@
+{
+  "meta": {
+    "startedAt": "2026-10-20T10:19:00.418Z",
+    "commit": "8c5b1dd",
+    "dirty": true,
+    "node": "v24.18.0",
+    "os": "Windows_NT 10.0.19045 x64",
+    "cpus": 12,
+    "cpuModel": "Intel(R) Core(TM) i7-8750H CPU @ 2.20GHz",
+    "memGB": 16,
+    "reps": 3,
+    "quick": false,
+    "localQueue": {
+      "dispatchesPerSecond": 20,
+      "concurrency": 30,
+      "pumpIntervalMs": 100
+    },
+    "apiAdmission": {
+      "QP_INGEST_RPS_PER_INSTANCE": 40,
+      "QP_INGEST_MAX_INFLIGHT": 32,
+      "QP_MAX_BACKLOG": 20000
+    },
+    "variants": {
+      "redis-off": {
+        "QP_REDIS_ENABLED": "false"
+      },
+      "redis-unreachable": {
+        "QP_REDIS_ENABLED": "true",
+        "REDIS_URL": "redis://127.0.0.1:6390"
+      },
+      "redis-on": {
+        "QP_REDIS_ENABLED": "true",
+        "REDIS_URL": "redis://127.0.0.1:6379"
+      }
+    },
+    "redisOn": "NOT RUN: no reachable Redis (set QP_LOAD_REDIS_URL)",
+    "caveat": "Emulators + in-process LocalDispatchQueue (20 dispatches/s) on one machine. Not comparable with Cloud Run / Cloud Tasks / Upstash.",
+    "finishedAt": "2026-10-20T10:33:43.156Z"
+  },
+  "runs": [
+    {
+      "scenario": "baseline",
+      "variant": "redis-off",
+      "rep": 1,
+      "startedAt": "2026-10-20T10:19:12.803Z",
+      "load": {
+        "target": {
+          "rps": 20,
+          "seconds": 15,
+          "label": "baseline"
+        },
+        "sent": 300,
+        "wallS": 14.98,
+        "acceptedCount": 300,
+        "rejected": {},
+        "acceptedPerSec": 20,
+        "httpLatencyMsAll": {
+          "n": 300,
+          "p50": 43.2,
+          "p95": 58.4,
+          "p99": 88.1,
+          "max": 148.9
+        },
+        "httpLatencyMsAccepted": {
+          "n": 300,
+          "p50": 43.2,
+          "p95": 58.4,
+          "p99": 88.1,
+          "max": 148.9
+        },
+        "startedAt": 1792491556340,
+        "endedAt": 1792491571324
+      },
+      "completion": {
+        "accepted": 300,
+        "completed": 300,
+        "failed": 0,
+        "stillPending": 0,
+        "acceptToCompletedMs": {
+          "n": 300,
+          "p50": 8163,
+          "p95": 14441,
+          "p99": 14972,
+          "max": 14979
+        },
+        "drainWallS": 2.2
+      }
+    },
+    {
+      "scenario": "baseline",
+      "variant": "redis-off",
+      "rep": 2,
+      "startedAt": "2026-10-20T10:19:34.207Z",
+      "load": {
+        "target": {
+          "rps": 20,
+          "seconds": 15,
+          "label": "baseline"
+        },
+        "sent": 300,
+        "wallS": 15.02,
+        "acceptedCount": 300,
+        "rejected": {},
+        "acceptedPerSec": 20,
+        "httpLatencyMsAll": {
+          "n": 300,
+          "p50": 42.8,
+          "p95": 53.2,
+          "p99": 56.9,
+          "max": 92.4
+        },
+        "httpLatencyMsAccepted": {
+          "n": 300,
+          "p50": 42.8,
+          "p95": 53.2,
+          "p99": 56.9,
+          "max": 92.4
+        },
+        "startedAt": 1792491576582,
+        "endedAt": 1792491591598
+      },
+      "completion": {
+        "accepted": 300,
+        "completed": 300,
+        "failed": 0,
+        "stillPending": 0,
+        "acceptToCompletedMs": {
+          "n": 300,
+          "p50": 8115,
+          "p95": 14436,
+          "p99": 14985,
+          "max": 15048
+        },
+        "drainWallS": 1.5
+      }
+    },
+    {
+      "scenario": "baseline",
+      "variant": "redis-off",
+      "rep": 3,
+      "startedAt": "2026-10-20T10:19:53.782Z",
+      "load": {
+        "target": {
+          "rps": 20,
+          "seconds": 15,
+          "label": "baseline"
+        },
+        "sent": 300,
+        "wallS": 15,
+        "acceptedCount": 300,
+        "rejected": {},
+        "acceptedPerSec": 20,
+        "httpLatencyMsAll": {
+          "n": 300,
+          "p50": 40.1,
+          "p95": 52.8,
+          "p99": 57.3,
+          "max": 68
+        },
+        "httpLatencyMsAccepted": {
+          "n": 300,
+          "p50": 40.1,
+          "p95": 52.8,
+          "p99": 57.3,
+          "max": 68
+        },
+        "startedAt": 1792491596120,
+        "endedAt": 1792491611123
+      },
+      "completion": {
+        "accepted": 300,
+        "completed": 300,
+        "failed": 0,
+        "stillPending": 0,
+        "acceptToCompletedMs": {
+          "n": 300,
+          "p50": 8016,
+          "p95": 14382,
+          "p99": 14963,
+          "max": 15049
+        },
+        "drainWallS": 2.4
+      }
+    },
+    {
+      "scenario": "spike",
+      "variant": "redis-off",
+      "rep": 1,
+      "startedAt": "2026-10-20T10:20:14.201Z",
+      "load": {
+        "target": {
+          "rps": 100,
+          "seconds": 8,
+          "label": "spike"
+        },
+        "sent": 800,
+        "wallS": 8.02,
+        "acceptedCount": 353,
+        "rejected": {
+          "503 OVERLOADED": 447
+        },
+        "acceptedPerSec": 44,
+        "httpLatencyMsAll": {
+          "n": 800,
+          "p50": 18.1,
+          "p95": 38.5,
+          "p99": 44.9,
+          "max": 66
+        },
+        "httpLatencyMsAccepted": {
+          "n": 353,
+          "p50": 27.8,
+          "p95": 40.7,
+          "p99": 47.5,
+          "max": 66
+        },
+        "startedAt": 1792491616520,
+        "endedAt": 1792491624542
+      },
+      "completion": {
+        "accepted": 353,
+        "completed": 353,
+        "failed": 0,
+        "stillPending": 0,
+        "acceptToCompletedMs": {
+          "n": 353,
+          "p50": 7218,
+          "p95": 9348,
+          "p99": 9873,
+          "max": 9979
+        },
+        "drainWallS": 9.5
+      }
+    },
+    {
+      "scenario": "spike",
+      "variant": "redis-off",
+      "rep": 2,
+      "startedAt": "2026-10-20T10:20:34.733Z",
+      "load": {
+        "target": {
+          "rps": 100,
+          "seconds": 8,
+          "label": "spike"
+        },
+        "sent": 800,
+        "wallS": 8.01,
+        "acceptedCount": 353,
+        "rejected": {
+          "503 OVERLOADED": 447
+        },
+        "acceptedPerSec": 44.1,
+        "httpLatencyMsAll": {
+          "n": 800,
+          "p50": 18.1,
+          "p95": 39.5,
+          "p99": 45.3,
+          "max": 57.3
+        },
+        "httpLatencyMsAccepted": {
+          "n": 353,
+          "p50": 28.1,
+          "p95": 42.7,
+          "p99": 48.6,
+          "max": 57.3
+        },
+        "startedAt": 1792491637038,
+        "endedAt": 1792491645044
+      },
+      "completion": {
+        "accepted": 353,
+        "completed": 353,
+        "failed": 0,
+        "stillPending": 0,
+        "acceptToCompletedMs": {
+          "n": 353,
+          "p50": 7476,
+          "p95": 9729,
+          "p99": 9942,
+          "max": 10262
+        },
+        "drainWallS": 10.3
+      }
+    },
+    {
+      "scenario": "spike",
+      "variant": "redis-off",
+      "rep": 3,
+      "startedAt": "2026-10-20T10:20:55.991Z",
+      "load": {
+        "target": {
+          "rps": 100,
+          "seconds": 8,
+          "label": "spike"
+        },
+        "sent": 800,
+        "wallS": 8,
+        "acceptedCount": 354,
+        "rejected": {
+          "503 OVERLOADED": 446
+        },
+        "acceptedPerSec": 44.2,
+        "httpLatencyMsAll": {
+          "n": 800,
+          "p50": 18.4,
+          "p95": 39.1,
+          "p99": 48.6,
+          "max": 57.9
+        },
+        "httpLatencyMsAccepted": {
+          "n": 354,
+          "p50": 27.9,
+          "p95": 44.1,
+          "p99": 52.6,
+          "max": 57.9
+        },
+        "startedAt": 1792491658348,
+        "endedAt": 1792491666350
+      },
+      "completion": {
+        "accepted": 354,
+        "completed": 354,
+        "failed": 0,
+        "stillPending": 0,
+        "acceptToCompletedMs": {
+          "n": 354,
+          "p50": 7595,
+          "p95": 9627,
+          "p99": 10317,
+          "max": 10945
+        },
+        "drainWallS": 10.9
+      }
+    },
+    {
+      "scenario": "recovery",
+      "variant": "redis-off",
+      "rep": 1,
+      "startedAt": "2026-10-20T10:21:17.957Z",
+      "phases": [
+        {
+          "target": {
+            "rps": 20,
+            "seconds": 8,
+            "label": "warm"
+          },
+          "sent": 160,
+          "wallS": 8.06,
+          "acceptedCount": 160,
+          "rejected": {},
+          "acceptedPerSec": 19.8,
+          "httpLatencyMsAll": {
+            "n": 160,
+            "p50": 41.4,
+            "p95": 102.5,
+            "p99": 145.3,
+            "max": 160.8
+          },
+          "httpLatencyMsAccepted": {
+            "n": 160,
+            "p50": 41.4,
+            "p95": 102.5,
+            "p99": 145.3,
+            "max": 160.8
+          },
+          "startedAt": 1792491680318,
+          "endedAt": 1792491688380
+        },
+        {
+          "target": {
+            "rps": 100,
+            "seconds": 8,
+            "label": "spike"
+          },
+          "sent": 800,
+          "wallS": 8.01,
+          "acceptedCount": 359,
+          "rejected": {
+            "503 OVERLOADED": 441
+          },
+          "acceptedPerSec": 44.8,
+          "httpLatencyMsAll": {
+            "n": 800,
+            "p50": 23.3,
+            "p95": 146,
+            "p99": 203.2,
+            "max": 233.1
+          },
+          "httpLatencyMsAccepted": {
+            "n": 359,
+            "p50": 35.5,
+            "p95": 175,
+            "p99": 216.9,
+            "max": 233.1
+          },
+          "startedAt": 1792491688380,
+          "endedAt": 1792491696392
+        },
+        {
+          "target": {
+            "rps": 10,
+            "seconds": 25,
+            "label": "tail"
+          },
+          "sent": 250,
+          "wallS": 24.96,
+          "acceptedCount": 250,
+          "rejected": {},
+          "acceptedPerSec": 10,
+          "httpLatencyMsAll": {
+            "n": 250,
+            "p50": 49.5,
+            "p95": 117.9,
+            "p99": 171.7,
+            "max": 180
+          },
+          "httpLatencyMsAccepted": {
+            "n": 250,
+            "p50": 49.5,
+            "p95": 117.9,
+            "p99": 171.7,
+            "max": 180
+          },
+          "startedAt": 1792491696392,
+          "endedAt": 1792491721355
+        }
+      ],
+      "backlog": {
+        "peakOutstanding": 222,
+        "outstandingAtSpikeEnd": 216,
+        "backlogThreshold": 10,
+        "recoveryS": 24.5,
+        "recovered": true,
+        "samples": [
+          {
+            "tS": 0,
+            "outstanding": 0,
+            "completed": 0
+          },
+          {
+            "tS": 1.1,
+            "outstanding": 19,
+            "completed": 2
+          },
+          {
+            "tS": 2.2,
+            "outstanding": 25,
+            "completed": 19
+          },
+          {
+            "tS": 3.4,
+            "outstanding": 20,
+            "completed": 46
+          },
+          {
+            "tS": 4.6,
+            "outstanding": 18,
+            "completed": 70
+          },
+          {
+            "tS": 5.7,
+            "outstanding": 36,
+            "completed": 78
+          },
+          {
+            "tS": 6.9,
+            "outstanding": 31,
+            "completed": 104
+          },
+          {
+            "tS": 8.1,
+            "outstanding": 24,
+            "completed": 134
+          },
+          {
+            "tS": 9.4,
+            "outstanding": 90,
+            "completed": 156
+          },
+          {
+            "tS": 10.9,
+            "outstanding": 125,
+            "completed": 183
+          },
+          {
+            "tS": 12.3,
+            "outstanding": 148,
+            "completed": 216
+          },
+          {
+            "tS": 13.9,
+            "outstanding": 180,
+            "completed": 249
+          },
+          {
+            "tS": 15.6,
+            "outstanding": 222,
+            "completed": 276
+          },
+          {
+            "tS": 17.2,
+            "outstanding": 216,
+            "completed": 315
+          },
+          {
+            "tS": 18.8,
+            "outstanding": 206,
+            "completed": 340
+          },
+          {
+            "tS": 20.4,
+            "outstanding": 186,
+            "completed": 376
+          },
+          {
+            "tS": 21.9,
+            "outstanding": 167,
+            "completed": 411
+          },
+          {
+            "tS": 23.4,
+            "outstanding": 154,
+            "completed": 438
+          },
+          {
+            "tS": 24.9,
+            "outstanding": 136,
+            "completed": 471
+          },
+          {
+            "tS": 26.3,
+            "outstanding": 125,
+            "completed": 496
+          },
+          {
+            "tS": 27.6,
+            "outstanding": 106,
+            "completed": 529
+          },
+          {
+            "tS": 28.9,
+            "outstanding": 92,
+            "completed": 556
+          },
+          {
+            "tS": 30.3,
+            "outstanding": 85,
+            "completed": 576
+          },
+          {
+            "tS": 31.6,
+            "outstanding": 66,
+            "completed": 608
+          },
+          {
+            "tS": 32.8,
+            "outstanding": 50,
+            "completed": 636
+          },
+          {
+            "tS": 34,
+            "outstanding": 42,
+            "completed": 656
+          },
+          {
+            "tS": 35.1,
+            "outstanding": 32,
+            "completed": 678
+          },
+          {
+            "tS": 36.3,
+            "outstanding": 16,
+            "completed": 705
+          },
+          {
+            "tS": 37.3,
+            "outstanding": 16,
+            "completed": 716
+          },
+          {
+            "tS": 38.4,
+            "outstanding": 12,
+            "completed": 731
+          },
+          {
+            "tS": 39.5,
+            "outstanding": 12,
+            "completed": 742
+          },
+          {
+            "tS": 40.6,
+            "outstanding": 10,
+            "completed": 754
+          },
+          {
+            "tS": 41.6,
+            "outstanding": 7,
+            "completed": 762
+          },
+          {
+            "tS": 42.2,
+            "outstanding": 0,
+            "completed": 769
+          }
+        ]
+      },
+      "completion": {
+        "accepted": 769,
+        "completed": 769,
+        "failed": 0,
+        "stillPending": 0,
+        "acceptToCompletedMs": {
+          "n": 769,
+          "p50": 5202,
+          "p95": 10892,
+          "p99": 11761,
+          "max": 12685
+        },
+        "warmPhaseAcceptToCompletedMs": {
+          "n": 159,
+          "p50": 1864,
+          "p95": 2878,
+          "p99": 3009,
+          "max": 3070
+        },
+        "tailPhaseAcceptToCompletedMs": {
+          "n": 250,
+          "p50": 5174,
+          "p95": 10687,
+          "p99": 11530,
+          "max": 12606
+        }
+      }
+    },
+    {
+      "scenario": "recovery",
+      "variant": "redis-off",
+      "rep": 2,
+      "startedAt": "2026-10-20T10:22:03.696Z",
+      "phases": [
+        {
+          "target": {
+            "rps": 20,
+            "seconds": 8,
+            "label": "warm"
+          },
+          "sent": 160,
+          "wallS": 8.19,
+          "acceptedCount": 160,
+          "rejected": {},
+          "acceptedPerSec": 19.5,
+          "httpLatencyMsAll": {
+            "n": 160,
+            "p50": 44.5,
+            "p95": 95.2,
+            "p99": 154.5,
+            "max": 230.1
+          },
+          "httpLatencyMsAccepted": {
+            "n": 160,
+            "p50": 44.5,
+            "p95": 95.2,
+            "p99": 154.5,
+            "max": 230.1
+          },
+          "startedAt": 1792491726078,
+          "endedAt": 1792491734264
+        },
+        {
+          "target": {
+            "rps": 100,
+            "seconds": 8,
+            "label": "spike"
+          },
+          "sent": 800,
+          "wallS": 8.11,
+          "acceptedCount": 360,
+          "rejected": {
+            "503 OVERLOADED": 440
+          },
+          "acceptedPerSec": 44.4,
+          "httpLatencyMsAll": {
+            "n": 800,
+            "p50": 25,
+            "p95": 182.2,
+            "p99": 332,
+            "max": 366.7
+          },
+          "httpLatencyMsAccepted": {
+            "n": 360,
+            "p50": 35.3,
+            "p95": 286.6,
+            "p99": 350.4,
+            "max": 366.7
+          },
+          "startedAt": 1792491734264,
+          "endedAt": 1792491742379
+        },
+        {
+          "target": {
+            "rps": 10,
+            "seconds": 25,
+            "label": "tail"
+          },
+          "sent": 250,
+          "wallS": 24.95,
+          "acceptedCount": 250,
+          "rejected": {},
+          "acceptedPerSec": 10,
+          "httpLatencyMsAll": {
+            "n": 250,
+            "p50": 49.5,
+            "p95": 127.8,
+            "p99": 168.6,
+            "max": 175.6
+          },
+          "httpLatencyMsAccepted": {
+            "n": 250,
+            "p50": 49.5,
+            "p95": 127.8,
+            "p99": 168.6,
+            "max": 175.6
+          },
+          "startedAt": 1792491742379,
+          "endedAt": 1792491767328
+        }
+      ],
+      "backlog": {
+        "peakOutstanding": 235,
+        "outstandingAtSpikeEnd": 215,
+        "backlogThreshold": 10,
+        "recoveryS": 23.1,
+        "recovered": true,
+        "samples": [
+          {
+            "tS": 0,
+            "outstanding": 0,
+            "completed": 0
+          },
+          {
+            "tS": 1.1,
+            "outstanding": 20,
+            "completed": 1
+          },
+          {
+            "tS": 2.3,
+            "outstanding": 23,
+            "completed": 23
+          },
+          {
+            "tS": 3.4,
+            "outstanding": 21,
+            "completed": 45
+          },
+          {
+            "tS": 4.6,
+            "outstanding": 21,
+            "completed": 72
+          },
+          {
+            "tS": 5.8,
+            "outstanding": 34,
+            "completed": 80
+          },
+          {
+            "tS": 6.9,
+            "outstanding": 33,
+            "completed": 103
+          },
+          {
+            "tS": 8.2,
+            "outstanding": 22,
+            "completed": 138
+          },
+          {
+            "tS": 9.5,
+            "outstanding": 88,
+            "completed": 160
+          },
+          {
+            "tS": 11,
+            "outstanding": 126,
+            "completed": 186
+          },
+          {
+            "tS": 12.6,
+            "outstanding": 152,
+            "completed": 220
+          },
+          {
+            "tS": 14.5,
+            "outstanding": 197,
+            "completed": 253
+          },
+          {
+            "tS": 16.3,
+            "outstanding": 235,
+            "completed": 285
+          },
+          {
+            "tS": 18.1,
+            "outstanding": 215,
+            "completed": 323
+          },
+          {
+            "tS": 19.8,
+            "outstanding": 195,
+            "completed": 360
+          },
+          {
+            "tS": 21.3,
+            "outstanding": 171,
+            "completed": 400
+          },
+          {
+            "tS": 22.9,
+            "outstanding": 160,
+            "completed": 426
+          },
+          {
+            "tS": 24.4,
+            "outstanding": 141,
+            "completed": 460
+          },
+          {
+            "tS": 25.9,
+            "outstanding": 129,
+            "completed": 487
+          },
+          {
+            "tS": 27.4,
+            "outstanding": 111,
+            "completed": 520
+          },
+          {
+            "tS": 28.7,
+            "outstanding": 98,
+            "completed": 546
+          },
+          {
+            "tS": 30.1,
+            "outstanding": 78,
+            "completed": 578
+          },
+          {
+            "tS": 31.3,
+            "outstanding": 71,
+            "completed": 600
+          },
+          {
+            "tS": 32.6,
+            "outstanding": 61,
+            "completed": 622
+          },
+          {
+            "tS": 33.9,
+            "outstanding": 41,
+            "completed": 655
+          },
+          {
+            "tS": 35,
+            "outstanding": 26,
+            "completed": 680
+          },
+          {
+            "tS": 36.1,
+            "outstanding": 18,
+            "completed": 700
+          },
+          {
+            "tS": 37.2,
+            "outstanding": 13,
+            "completed": 717
+          },
+          {
+            "tS": 38.3,
+            "outstanding": 13,
+            "completed": 727
+          },
+          {
+            "tS": 39.4,
+            "outstanding": 10,
+            "completed": 741
+          },
+          {
+            "tS": 40.5,
+            "outstanding": 9,
+            "completed": 753
+          },
+          {
+            "tS": 41.6,
+            "outstanding": 8,
+            "completed": 762
+          },
+          {
+            "tS": 42.1,
+            "outstanding": 0,
+            "completed": 770
+          }
+        ]
+      },
+      "completion": {
+        "accepted": 770,
+        "completed": 770,
+        "failed": 0,
+        "stillPending": 0,
+        "acceptToCompletedMs": {
+          "n": 770,
+          "p50": 5229,
+          "p95": 10912,
+          "p99": 11633,
+          "max": 12095
+        },
+        "warmPhaseAcceptToCompletedMs": {
+          "n": 160,
+          "p50": 1906,
+          "p95": 2804,
+          "p99": 3010,
+          "max": 3056
+        },
+        "tailPhaseAcceptToCompletedMs": {
+          "n": 250,
+          "p50": 5067,
+          "p95": 11194,
+          "p99": 11874,
+          "max": 12095
+        }
+      }
+    },
+    {
+      "scenario": "recovery",
+      "variant": "redis-off",
+      "rep": 3,
+      "startedAt": "2026-10-20T10:22:49.371Z",
+      "phases": [
+        {
+          "target": {
+            "rps": 20,
+            "seconds": 8,
+            "label": "warm"
+          },
+          "sent": 160,
+          "wallS": 7.99,
+          "acceptedCount": 160,
+          "rejected": {},
+          "acceptedPerSec": 20,
+          "httpLatencyMsAll": {
+            "n": 160,
+            "p50": 43.6,
+            "p95": 135.2,
+            "p99": 190.4,
+            "max": 244.3
+          },
+          "httpLatencyMsAccepted": {
+            "n": 160,
+            "p50": 43.6,
+            "p95": 135.2,
+            "p99": 190.4,
+            "max": 244.3
+          },
+          "startedAt": 1792491771766,
+          "endedAt": 1792491779758
+        },
+        {
+          "target": {
+            "rps": 100,
+            "seconds": 8,
+            "label": "spike"
+          },
+          "sent": 800,
+          "wallS": 8,
+          "acceptedCount": 359,
+          "rejected": {
+            "503 OVERLOADED": 441
+          },
+          "acceptedPerSec": 44.9,
+          "httpLatencyMsAll": {
+            "n": 800,
+            "p50": 26,
+            "p95": 219,
+            "p99": 250.8,
+            "max": 292
+          },
+          "httpLatencyMsAccepted": {
+            "n": 359,
+            "p50": 36.3,
+            "p95": 233.4,
+            "p99": 275.4,
+            "max": 292
+          },
+          "startedAt": 1792491779758,
+          "endedAt": 1792491787763
+        },
+        {
+          "target": {
+            "rps": 10,
+            "seconds": 25,
+            "label": "tail"
+          },
+          "sent": 250,
+          "wallS": 24.95,
+          "acceptedCount": 250,
+          "rejected": {},
+          "acceptedPerSec": 10,
+          "httpLatencyMsAll": {
+            "n": 250,
+            "p50": 50,
+            "p95": 150.8,
+            "p99": 205.2,
+            "max": 223.4
+          },
+          "httpLatencyMsAccepted": {
+            "n": 250,
+            "p50": 50,
+            "p95": 150.8,
+            "p99": 205.2,
+            "max": 223.4
+          },
+          "startedAt": 1792491787763,
+          "endedAt": 1792491812715
+        }
+      ],
+      "backlog": {
+        "peakOutstanding": 228,
+        "outstandingAtSpikeEnd": 228,
+        "backlogThreshold": 10,
+        "recoveryS": 21.2,
+        "recovered": true,
+        "samples": [
+          {
+            "tS": 0,
+            "outstanding": 0,
+            "completed": 0
+          },
+          {
+            "tS": 1.2,
+            "outstanding": 18,
+            "completed": 2
+          },
+          {
+            "tS": 2.3,
+            "outstanding": 27,
+            "completed": 20
+          },
+          {
+            "tS": 3.6,
+            "outstanding": 20,
+            "completed": 47
+          },
+          {
+            "tS": 4.8,
+            "outstanding": 18,
+            "completed": 75
+          },
+          {
+            "tS": 5.9,
+            "outstanding": 24,
+            "completed": 92
+          },
+          {
+            "tS": 7.1,
+            "outstanding": 22,
+            "completed": 118
+          },
+          {
+            "tS": 8.4,
+            "outstanding": 28,
+            "completed": 146
+          },
+          {
+            "tS": 9.8,
+            "outstanding": 115,
+            "completed": 154
+          },
+          {
+            "tS": 11.4,
+            "outstanding": 141,
+            "completed": 190
+          },
+          {
+            "tS": 13.2,
+            "outstanding": 177,
+            "completed": 230
+          },
+          {
+            "tS": 15.1,
+            "outstanding": 217,
+            "completed": 262
+          },
+          {
+            "tS": 17,
+            "outstanding": 228,
+            "completed": 302
+          },
+          {
+            "tS": 18.9,
+            "outstanding": 205,
+            "completed": 343
+          },
+          {
+            "tS": 20.6,
+            "outstanding": 180,
+            "completed": 386
+          },
+          {
+            "tS": 22.3,
+            "outstanding": 169,
+            "completed": 414
+          },
+          {
+            "tS": 24,
+            "outstanding": 150,
+            "completed": 450
+          },
+          {
+            "tS": 25.6,
+            "outstanding": 131,
+            "completed": 483
+          },
+          {
+            "tS": 27.2,
+            "outstanding": 121,
+            "completed": 510
+          },
+          {
+            "tS": 28.7,
+            "outstanding": 96,
+            "completed": 550
+          },
+          {
+            "tS": 30.1,
+            "outstanding": 81,
+            "completed": 578
+          },
+          {
+            "tS": 31.4,
+            "outstanding": 63,
+            "completed": 610
+          },
+          {
+            "tS": 32.6,
+            "outstanding": 55,
+            "completed": 630
+          },
+          {
+            "tS": 33.8,
+            "outstanding": 45,
+            "completed": 653
+          },
+          {
+            "tS": 35,
+            "outstanding": 26,
+            "completed": 682
+          },
+          {
+            "tS": 36.1,
+            "outstanding": 15,
+            "completed": 705
+          },
+          {
+            "tS": 37.2,
+            "outstanding": 10,
+            "completed": 722
+          },
+          {
+            "tS": 38.3,
+            "outstanding": 10,
+            "completed": 732
+          },
+          {
+            "tS": 39.4,
+            "outstanding": 12,
+            "completed": 741
+          },
+          {
+            "tS": 40.5,
+            "outstanding": 9,
+            "completed": 755
+          },
+          {
+            "tS": 41.6,
+            "outstanding": 5,
+            "completed": 764
+          },
+          {
+            "tS": 42.1,
+            "outstanding": 0,
+            "completed": 769
+          }
+        ]
+      },
+      "completion": {
+        "accepted": 769,
+        "completed": 769,
+        "failed": 0,
+        "stillPending": 0,
+        "acceptToCompletedMs": {
+          "n": 769,
+          "p50": 5452,
+          "p95": 11207,
+          "p99": 12345,
+          "max": 12537
+        },
+        "warmPhaseAcceptToCompletedMs": {
+          "n": 159,
+          "p50": 1776,
+          "p95": 2569,
+          "p99": 3238,
+          "max": 3281
+        },
+        "tailPhaseAcceptToCompletedMs": {
+          "n": 250,
+          "p50": 5381,
+          "p95": 11154,
+          "p99": 11987,
+          "max": 12290
+        }
+      }
+    },
+    {
+      "scenario": "worker-throughput",
+      "variant": "redis-off",
+      "rep": 1,
+      "startedAt": "2026-10-20T10:23:35.080Z",
+      "levels": [
+        {
+          "concurrency": 1,
+          "deliveries": 150,
+          "ingestAcceptedForSetup": 150,
+          "rejectedDuringSetup": {},
+          "wallS": 90.77,
+          "deliveriesPerSec": 1.7,
+          "workerStatusCodes": {
+            "200": 150
+          },
+          "deliveryLatencyMs": {
+            "n": 150,
+            "p50": 626.8,
+            "p95": 859.2,
+            "p99": 880.3,
+            "max": 884.8
+          },
+          "completed": 150,
+          "failed": 0
+        },
+        {
+          "concurrency": 8,
+          "deliveries": 150,
+          "ingestAcceptedForSetup": 150,
+          "rejectedDuringSetup": {},
+          "wallS": 11.31,
+          "deliveriesPerSec": 13.3,
+          "workerStatusCodes": {
+            "200": 150
+          },
+          "deliveryLatencyMs": {
+            "n": 150,
+            "p50": 605.6,
+            "p95": 832.3,
+            "p99": 863.2,
+            "max": 885.6
+          },
+          "completed": 150,
+          "failed": 0
+        },
+        {
+          "concurrency": 32,
+          "deliveries": 150,
+          "ingestAcceptedForSetup": 150,
+          "rejectedDuringSetup": {},
+          "wallS": 2.9,
+          "deliveriesPerSec": 51.7,
+          "workerStatusCodes": {
+            "200": 150
+          },
+          "deliveryLatencyMs": {
+            "n": 150,
+            "p50": 543.3,
+            "p95": 800.7,
+            "p99": 879.2,
+            "max": 879.7
+          },
+          "completed": 150,
+          "failed": 0
+        }
+      ]
+    },
+    {
+      "scenario": "worker-throughput",
+      "variant": "redis-off",
+      "rep": 2,
+      "startedAt": "2026-10-20T10:26:15.920Z",
+      "levels": [
+        {
+          "concurrency": 1,
+          "deliveries": 150,
+          "ingestAcceptedForSetup": 150,
+          "rejectedDuringSetup": {},
+          "wallS": 88.27,
+          "deliveriesPerSec": 1.7,
+          "workerStatusCodes": {
+            "200": 150
+          },
+          "deliveryLatencyMs": {
+            "n": 150,
+            "p50": 578.1,
+            "p95": 854.7,
+            "p99": 876.7,
+            "max": 876.9
+          },
+          "completed": 150,
+          "failed": 0
+        },
+        {
+          "concurrency": 8,
+          "deliveries": 150,
+          "ingestAcceptedForSetup": 150,
+          "rejectedDuringSetup": {},
+          "wallS": 10.75,
+          "deliveriesPerSec": 14,
+          "workerStatusCodes": {
+            "200": 150
+          },
+          "deliveryLatencyMs": {
+            "n": 150,
+            "p50": 545.4,
+            "p95": 824.3,
+            "p99": 884.8,
+            "max": 887.9
+          },
+          "completed": 150,
+          "failed": 0
+        },
+        {
+          "concurrency": 32,
+          "deliveries": 150,
+          "ingestAcceptedForSetup": 150,
+          "rejectedDuringSetup": {},
+          "wallS": 2.93,
+          "deliveriesPerSec": 51.3,
+          "workerStatusCodes": {
+            "200": 150
+          },
+          "deliveryLatencyMs": {
+            "n": 150,
+            "p50": 552.4,
+            "p95": 825.4,
+            "p99": 860.1,
+            "max": 860.6
+          },
+          "completed": 150,
+          "failed": 0
+        }
+      ]
+    },
+    {
+      "scenario": "worker-throughput",
+      "variant": "redis-off",
+      "rep": 3,
+      "startedAt": "2026-10-20T10:28:54.489Z",
+      "levels": [
+        {
+          "concurrency": 1,
+          "deliveries": 150,
+          "ingestAcceptedForSetup": 150,
+          "rejectedDuringSetup": {},
+          "wallS": 86.39,
+          "deliveriesPerSec": 1.7,
+          "workerStatusCodes": {
+            "200": 150
+          },
+          "deliveryLatencyMs": {
+            "n": 150,
+            "p50": 563.3,
+            "p95": 859.4,
+            "p99": 889.8,
+            "max": 895.2
+          },
+          "completed": 150,
+          "failed": 0
+        },
+        {
+          "concurrency": 8,
+          "deliveries": 150,
+          "ingestAcceptedForSetup": 150,
+          "rejectedDuringSetup": {},
+          "wallS": 10.71,
+          "deliveriesPerSec": 14,
+          "workerStatusCodes": {
+            "200": 150
+          },
+          "deliveryLatencyMs": {
+            "n": 150,
+            "p50": 521.4,
+            "p95": 839.2,
+            "p99": 862.5,
+            "max": 864.8
+          },
+          "completed": 150,
+          "failed": 0
+        },
+        {
+          "concurrency": 32,
+          "deliveries": 150,
+          "ingestAcceptedForSetup": 150,
+          "rejectedDuringSetup": {},
+          "wallS": 3.02,
+          "deliveriesPerSec": 49.6,
+          "workerStatusCodes": {
+            "200": 150
+          },
+          "deliveryLatencyMs": {
+            "n": 150,
+            "p50": 534.6,
+            "p95": 810,
+            "p99": 845.3,
+            "max": 850.3
+          },
+          "completed": 150,
+          "failed": 0
+        }
+      ]
+    },
+    {
+      "scenario": "baseline",
+      "variant": "redis-unreachable",
+      "rep": 1,
+      "startedAt": "2026-10-20T10:31:35.052Z",
+      "load": {
+        "target": {
+          "rps": 20,
+          "seconds": 15,
+          "label": "baseline"
+        },
+        "sent": 300,
+        "wallS": 15,
+        "acceptedCount": 300,
+        "rejected": {},
+        "acceptedPerSec": 20,
+        "httpLatencyMsAll": {
+          "n": 300,
+          "p50": 40,
+          "p95": 52.9,
+          "p99": 68.1,
+          "max": 87.8
+        },
+        "httpLatencyMsAccepted": {
+          "n": 300,
+          "p50": 40,
+          "p95": 52.9,
+          "p99": 68.1,
+          "max": 87.8
+        },
+        "startedAt": 1792492297433,
+        "endedAt": 1792492312435
+      },
+      "completion": {
+        "accepted": 300,
+        "completed": 300,
+        "failed": 0,
+        "stillPending": 0,
+        "acceptToCompletedMs": {
+          "n": 300,
+          "p50": 8516,
+          "p95": 14512,
+          "p99": 15051,
+          "max": 15134
+        },
+        "drainWallS": 2.3
+      }
+    },
+    {
+      "scenario": "baseline",
+      "variant": "redis-unreachable",
+      "rep": 2,
+      "startedAt": "2026-10-20T10:31:55.404Z",
+      "load": {
+        "target": {
+          "rps": 20,
+          "seconds": 15,
+          "label": "baseline"
+        },
+        "sent": 300,
+        "wallS": 14.99,
+        "acceptedCount": 300,
+        "rejected": {},
+        "acceptedPerSec": 20,
+        "httpLatencyMsAll": {
+          "n": 300,
+          "p50": 40,
+          "p95": 52.2,
+          "p99": 67,
+          "max": 80.5
+        },
+        "httpLatencyMsAccepted": {
+          "n": 300,
+          "p50": 40,
+          "p95": 52.2,
+          "p99": 67,
+          "max": 80.5
+        },
+        "startedAt": 1792492318029,
+        "endedAt": 1792492333014
+      },
+      "completion": {
+        "accepted": 300,
+        "completed": 300,
+        "failed": 0,
+        "stillPending": 0,
+        "acceptToCompletedMs": {
+          "n": 300,
+          "p50": 8670,
+          "p95": 14527,
+          "p99": 15044,
+          "max": 15102
+        },
+        "drainWallS": 2.3
+      }
+    },
+    {
+      "scenario": "baseline",
+      "variant": "redis-unreachable",
+      "rep": 3,
+      "startedAt": "2026-10-20T10:32:16.052Z",
+      "load": {
+        "target": {
+          "rps": 20,
+          "seconds": 15,
+          "label": "baseline"
+        },
+        "sent": 300,
+        "wallS": 14.99,
+        "acceptedCount": 300,
+        "rejected": {},
+        "acceptedPerSec": 20,
+        "httpLatencyMsAll": {
+          "n": 300,
+          "p50": 39.1,
+          "p95": 53,
+          "p99": 67.8,
+          "max": 90.2
+        },
+        "httpLatencyMsAccepted": {
+          "n": 300,
+          "p50": 39.1,
+          "p95": 53,
+          "p99": 67.8,
+          "max": 90.2
+        },
+        "startedAt": 1792492338777,
+        "endedAt": 1792492353771
+      },
+      "completion": {
+        "accepted": 300,
+        "completed": 300,
+        "failed": 0,
+        "stillPending": 0,
+        "acceptToCompletedMs": {
+          "n": 300,
+          "p50": 8550,
+          "p95": 14512,
+          "p99": 15001,
+          "max": 15066
+        },
+        "drainWallS": 2.4
+      }
+    },
+    {
+      "scenario": "spike",
+      "variant": "redis-unreachable",
+      "rep": 1,
+      "startedAt": "2026-10-20T10:32:36.823Z",
+      "load": {
+        "target": {
+          "rps": 100,
+          "seconds": 8,
+          "label": "spike"
+        },
+        "sent": 800,
+        "wallS": 8.01,
+        "acceptedCount": 353,
+        "rejected": {
+          "503 OVERLOADED": 447
+        },
+        "acceptedPerSec": 44.1,
+        "httpLatencyMsAll": {
+          "n": 800,
+          "p50": 18,
+          "p95": 38.7,
+          "p99": 44.3,
+          "max": 60.1
+        },
+        "httpLatencyMsAccepted": {
+          "n": 353,
+          "p50": 28,
+          "p95": 40.8,
+          "p99": 49.5,
+          "max": 60.1
+        },
+        "startedAt": 1792492359153,
+        "endedAt": 1792492367166
+      },
+      "completion": {
+        "accepted": 353,
+        "completed": 353,
+        "failed": 0,
+        "stillPending": 0,
+        "acceptToCompletedMs": {
+          "n": 353,
+          "p50": 7891,
+          "p95": 10864,
+          "p99": 11048,
+          "max": 11138
+        },
+        "drainWallS": 10.9
+      }
+    },
+    {
+      "scenario": "spike",
+      "variant": "redis-unreachable",
+      "rep": 2,
+      "startedAt": "2026-10-20T10:32:58.709Z",
+      "load": {
+        "target": {
+          "rps": 100,
+          "seconds": 8,
+          "label": "spike"
+        },
+        "sent": 800,
+        "wallS": 8.03,
+        "acceptedCount": 355,
+        "rejected": {
+          "503 OVERLOADED": 445
+        },
+        "acceptedPerSec": 44.2,
+        "httpLatencyMsAll": {
+          "n": 800,
+          "p50": 18.3,
+          "p95": 40.3,
+          "p99": 51.9,
+          "max": 68.3
+        },
+        "httpLatencyMsAccepted": {
+          "n": 355,
+          "p50": 30,
+          "p95": 44.9,
+          "p99": 54.4,
+          "max": 68.3
+        },
+        "startedAt": 1792492381045,
+        "endedAt": 1792492389072
+      },
+      "completion": {
+        "accepted": 355,
+        "completed": 355,
+        "failed": 0,
+        "stillPending": 0,
+        "acceptToCompletedMs": {
+          "n": 355,
+          "p50": 7901,
+          "p95": 10854,
+          "p99": 11117,
+          "max": 11229
+        },
+        "drainWallS": 11.1
+      }
+    },
+    {
+      "scenario": "spike",
+      "variant": "redis-unreachable",
+      "rep": 3,
+      "startedAt": "2026-10-20T10:33:20.824Z",
+      "load": {
+        "target": {
+          "rps": 100,
+          "seconds": 8,
+          "label": "spike"
+        },
+        "sent": 800,
+        "wallS": 8.04,
+        "acceptedCount": 356,
+        "rejected": {
+          "503 OVERLOADED": 444
+        },
+        "acceptedPerSec": 44.3,
+        "httpLatencyMsAll": {
+          "n": 800,
+          "p50": 18.1,
+          "p95": 38.5,
+          "p99": 45.4,
+          "max": 69.9
+        },
+        "httpLatencyMsAccepted": {
+          "n": 356,
+          "p50": 29,
+          "p95": 40.7,
+          "p99": 49.3,
+          "max": 69.9
+        },
+        "startedAt": 1792492403265,
+        "endedAt": 1792492411301
+      },
+      "completion": {
+        "accepted": 356,
+        "completed": 356,
+        "failed": 0,
+        "stillPending": 0,
+        "acceptToCompletedMs": {
+          "n": 356,
+          "p50": 7947,
+          "p95": 10124,
+          "p99": 10463,
+          "max": 11113
+        },
+        "drainWallS": 11.1
+      }
+    }
+  ]
+}

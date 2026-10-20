@@ -18,7 +18,7 @@ No cloud resource exists. Nothing pushed (no remote). The local MVP works end to
 | M3 | B3 on emulator | done (suite re-run on merged tree) |
 | M4 | B4 COMPLETED end to end | **local: done**; cloud: not run |
 | M5 | B5 Redis with fallbacks | code merged; **real Redis NOT RUN**; cloud deploy pending |
-| M6 | B6 baseline/spike/Redis on-off, 3 reps | todo; local single-run probe only (see below) |
+| M6 | B6 baseline/spike/Redis on-off, 3 reps | **local done** (`tests/load`, 3 reps, lost=0); real Redis and k6 NOT RUN |
 | M7 | README EN/TR with measured results | todo |
 
 ## Checks on main (clean clone, frozen lockfile, 2026-10-20)
@@ -54,5 +54,5 @@ No cloud resource exists. Nothing pushed (no remote). The local MVP works end to
 ## Next step
 
 1. Owner: stop orphan emulators; approve GCP project + billing to run C1–C9; create the GitHub remote so CI can run (it includes real Redis).
-2. B6 (Codex writes, Claude verifies): k6 or Node load scripts in `tests/load` with 3 repetitions and result JSON; adopt `docs/verification/*.mjs` as tests.
+2. B6 follow-ups: run `redis-on` variant once a Redis exists (`QP_LOAD_REDIS_URL`); optional k6 plan in `tests/load/README.md`. Infra test timeouts (flaky under load) need raising by the infra owner.
 3. B7: deploy/shutdown scripts and README with measured numbers only.

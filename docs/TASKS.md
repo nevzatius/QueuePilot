@@ -35,7 +35,7 @@ Status values: `todo | active | review | done | blocked`.
 | B3 Platform, auth and ingestion | Codex | A1, A2, B1 | merged 2026-10-19 (`b6612bc`); emulator suite re-run on merged tree 2026-10-20: pass |
 | B4 Queue, worker and reconciler | Codex | A2, B3 | merged 2026-10-20 (`3b07080`); T1–T13 + races on emulator pass; cloud NOT RUN |
 | B5 Redis limits, quotas and cache | Codex | B3 | merged 2026-10-20 (`9bc5949`); offline pass; **real-Redis suite NOT RUN** (CI only) |
-| B6 Load tests and verify | Codex | B4, B5, B2 | todo |
+| B6 Load tests and verify | Codex | B4, B5, B2 | local Node suite done 2026-10-20 (`tests/load`, 3 reps); **k6 and real-Redis variants NOT RUN** |
 | B7 Deploy finalisation and README drafts | Codex | all | todo |
 
 ### A1 Contracts: `packages/contracts`
@@ -136,3 +136,4 @@ _(none)_  T1 row note: ADR-017 gives seq=2 after a lost API enqueue (the card te
 
 **A3 + B3 merge notes (2026-10-19).** Merged `claude/a3-web` and `codex/b3-backend` with `--no-ff` (no overlapping files). Integration fixes: (1) API error handler now mirrors `Retry-After` into the Problem body as `retryAfterSeconds` (contract `ProblemDetailsSchema`; the web UI reads only the body). (2) Root `pnpm test` now runs `scripts/test.mjs`: node suites + web jsdom suite + `infra/*.test.mjs`. (3) Root integration config adds `apps/api/test/integration`; `scripts/integration.mjs` also runs the frontend-to-API smoke (`apps/web/smoke/`, spawns `apps/api/dist/server.js`, so CI now builds before integration). Not a CCR: no contract change. Pending: B3 emulator suite and the smoke were not run on the merged tree (port 8080 held by an orphaned emulator; see PROJECT_STATE).
 - 2026-10-20: B4 (`577263a`, merge `3b07080`) and B5 (`35efa81`, merge `9bc5949`) merged with `--no-ff`. Codex's sandbox could not spawn processes or commit, so Claude ran every check and committed. Integration fixes by Claude: web smoke config root + `SMOKE_API_PORT` (`7ce2252`; the smoke step had found no files before), `queue.test.ts` fixture timing, root workspace deps `@queuepilot/core` and `@queuepilot/contracts` (`71f060d`, `47e4fd1`; hand-made symlinks had hidden the missing links), `ioredis` kept external in API/worker bundles (`a15020b`; the bundled worker crashed at startup). ADR-018 added from the B5 handoff.
+- 2026-10-20: B6 local load suite (`tests/load`, Node, no k6). Written by Claude directly (Codex not available in this session), so no Codex-owned path was touched by anyone else. Results in `tests/load/results/`. Intermittent `infra/offline.test.mjs` failure reproduced under CPU load: 5 s timeouts around `fork`/`spawnSync` of `scripts/spike/server.mjs` (warm start 0.7 s). Follow-up for the infra owner: raise those timeouts (lines ~198 and ~222).
