@@ -60,14 +60,17 @@ export function resolveTarget({ project, approveProject, apply, env }) {
   return { mode: 'cloud', project };
 }
 
-/** Cloud mode only: the project must exist, be ACTIVE and carry the demo label (same rule as infra/apply.mjs). */
-export async function verifyCloudProject(target, cloud) {
+/** Cloud mode only: the project must exist, be ACTIVE, carry the demo label and, when given, match the project number (same rules as infra/apply.mjs). */
+export async function verifyCloudProject(target, cloud, projectNumber) {
   if (target.mode !== 'cloud') return;
   let info;
   try { info = await cloud.client('cloudresourcemanager', `v1/projects/${target.project}`); }
   catch { throw new ScriptError(EXIT.IO, 'Could not read the project; check gcloud login and project access'); }
   if (info.projectId !== target.project || info.lifecycleState !== 'ACTIVE') {
     throw new ScriptError(EXIT.REFUSED, 'Project identity or state mismatch; refusing');
+  }
+  if (projectNumber !== undefined && info.projectNumber !== projectNumber) {
+    throw new ScriptError(EXIT.REFUSED, 'Project number mismatch; refusing');
   }
   if (info.labels?.['queuepilot-environment'] !== 'demo') {
     throw new ScriptError(EXIT.REFUSED, 'Project is not labelled queuepilot-environment=demo; refusing');

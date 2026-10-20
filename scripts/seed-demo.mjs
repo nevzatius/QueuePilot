@@ -20,7 +20,7 @@ export const sandboxTenant = (openSignup) => ({
 });
 
 const OPTIONS = {
-  project: { type: 'string' }, 'approve-project': { type: 'string' }, 'open-signup': { type: 'string' },
+  project: { type: 'string' }, 'project-number': { type: 'string' }, 'approve-project': { type: 'string' }, 'open-signup': { type: 'string' },
   'member-uid': { type: 'string' }, apply: { type: 'boolean', default: false },
 };
 
@@ -31,7 +31,8 @@ export function parseSeedArgs(argv, env) {
   }
   if (values['member-uid'] !== undefined && !UID.test(values['member-uid'])) throw new ScriptError(EXIT.USAGE, 'Invalid --member-uid (a single Firebase Auth uid)');
   const target = resolveTarget({ project: values.project, approveProject: values['approve-project'], apply: values.apply, env });
-  return { target, openSignup: values['open-signup'] === 'true', memberUid: values['member-uid'], apply: values.apply };
+  if (values['project-number'] !== undefined && !/^[1-9][0-9]{5,19}$/.test(values['project-number'])) throw new ScriptError(EXIT.USAGE, 'Invalid --project-number');
+  return { target, openSignup: values['open-signup'] === 'true', memberUid: values['member-uid'], apply: values.apply, projectNumber: values['project-number'] };
 }
 
 const same = (a, b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
@@ -39,7 +40,7 @@ const canonical = (value) => value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
 
 export async function seedDemo(options, deps) {
-  const { target, openSignup, memberUid, apply } = options;
+  const { target, openSignup, memberUid, apply, projectNumber } = options;
   const tenant = sandboxTenant(openSignup);
   deps.io.out(`${apply ? 'APPLY' : 'DRY RUN'}: project=${target.project} (${target.mode})`);
   deps.io.out(`  tenants/${SANDBOX_ID}: ${JSON.stringify(tenant)}`);
@@ -48,7 +49,7 @@ export async function seedDemo(options, deps) {
     deps.io.out('Nothing was read or written. Writes need --apply and --approve-project=<project>.');
     return EXIT.OK;
   }
-  await verifyCloudProject(target, { client: (...args) => deps.cloudClient()(...args) });
+  await verifyCloudProject(target, { client: (...args) => deps.cloudClient()(...args) }, projectNumber);
   const store = deps.firestore(target);
 
   const created = await store.create('tenants', SANDBOX_ID, tenant);

@@ -60,7 +60,7 @@ export function runPreflight(ctx) {
   }
   if (image(dockerfiles.api) !== image(dockerfiles.worker)) problems.push('api and worker use different base images');
   const ignore = exists('.dockerignore') ? read('.dockerignore') : '';
-  for (const needle of ['.env', '**/node_modules', '.git']) if (!ignore.split('\n').includes(needle)) problems.push(`.dockerignore lacks ${needle}`);
+  for (const needle of ['**/.env', '**/node_modules', '.git']) if (!ignore.split('\n').includes(needle)) problems.push(`.dockerignore lacks ${needle}`);
   for (const required of ['pnpm-lock.yaml', 'package.json']) if (ignore.split('\n').includes(required)) problems.push(`.dockerignore excludes ${required}`);
   add('dockerfiles', problems.length ? 'FAIL' : 'PASS', problems.length ? problems.join('; ') : 'pinned Node 24 base, non-root, exec-form CMD, frozen lockfile, /health, no secrets');
 
@@ -87,7 +87,7 @@ export function runPreflight(ctx) {
   // 6. Nothing in the tooling resumes queues or jobs
   const tooling = ['infra/apply.mjs', 'infra/cloud.mjs', 'infra/spec.mjs', 'scripts/deploy.mjs', 'scripts/shutdown.mjs'].filter(exists).map(read).join('\n');
   add('paused-defaults', /:resume\b/.test(tooling) ? 'FAIL' : (/ensurePaused/.test(tooling) ? 'PASS' : 'FAIL'),
-    'queue and Scheduler are created paused and no tooling resumes them (resume is an owner action)');
+    'text check only: tooling pauses via ensurePaused and contains no resume call (resume is an owner action; real behaviour is unverified until C-checks)');
 
   // 7. No key files in the tree (names only)
   const keyFiles = ctx.listFiles().filter((file) => /(^|\/)(service-account[^/]*\.json|[^/]*-credentials\.json|\.env(\.[^/]+)?(?<!\.example)|[^/]+\.(pem|p12|pfx|key))$/i.test(file));

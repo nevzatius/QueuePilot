@@ -32,7 +32,7 @@ A green preflight does not mean any cloud resource exists or that C1–C9 passed
 ## A. Google Cloud project
 
 1. Choose or create a dedicated **demo** project containing no production resources. Label it `queuepilot-environment=demo`.
-   The scripts check this label and the exact project number before any write and refuse placeholder or `prod`-named projects.
+   `infra/apply.mjs` and `scripts/shutdown.mjs` check this label and the exact project number before any write; `grant-role.mjs` and `seed-demo.mjs` check ACTIVE state and the label, and the number too when you pass `--project-number`. All refuse placeholder or `prod`-named projects.
 2. Link billing yourself (the scripts never enable billing). Create a **budget with alerts** in the console first (Billing → Budgets).
    Instance and queue limits bound throughput, not money; they are not a hard cap.
 3. Install gcloud yourself and log in with your normal short-lived login. Scripts take a short-lived token through gcloud and
@@ -209,7 +209,7 @@ node scripts/grant-role.mjs --project ACTUAL_DEMO_PROJECT --tenant sandbox --uid
    `seed-demo.mjs --member-uid UID` can pre-create a *member* membership instead of waiting for the first sign-in; it never creates an admin. `grant-role.mjs` requires the
    tenant to exist and be active, refuses to move a user between tenants or to reactivate a suspended membership, accepts one explicit tenant and one uid (no wildcards),
    and the API caches memberships for up to 30 s, so the role takes effect within that time. Both verify the project exists, is ACTIVE and carries the
-   `queuepilot-environment=demo` label before writing. Exit codes: 0 ok, 2 usage, 3 refused, 4 state conflict, 5 I/O. With `open-signup true`, anyone with a Google login can join
+   `queuepilot-environment=demo` label before writing (add `--project-number N` to also pin the number). Exit codes: 0 ok, 2 usage, 3 refused, 4 state conflict, 5 I/O. With `open-signup true`, anyone with a Google login can join
    `sandbox`; choose `false` to keep sign-up closed until you are ready. Sign-up quotas for `sandbox` are `10/min/user, 30/day/user, 2000/day` (ARCHITECTURE §15) and fail
    closed when Redis is unavailable. **Never run these against a real project until you have reviewed the dry-run output.**
 

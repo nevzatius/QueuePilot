@@ -1,13 +1,13 @@
 # Project State
 
 Single writer: Claude Code (ADR-013). Keep this file under 60 lines.
-Last updated: 2026-10-20 (session 2), by Claude Code (GitHub sync, real-Redis tests, flake fix, docs).
+Last updated: 2026-10-20 (session 3), by Claude Code (B7 pre-deployment hardening on branch `claude/b7-preflight`, not merged).
 
 ## Phase
 
 Architecture v0.2 frozen (ADR-009 to ADR-018). Merged on `main`: B1, A1, A2/A2.2, B2 (offline scripts), A3 (web), B3, B4, B5, B6 (local).
 Remote: private `github.com/nevzatius/QueuePilot`. No cloud resource exists. The local MVP works end to end on emulators.
-B7 (cloud deployment) not started; owner runbook prepared in `docs/DEPLOYMENT_RUNBOOK.md`.
+B7 (cloud deployment) not started. Pre-deployment hardening is on branch `claude/b7-preflight` (awaiting review/merge): Dockerfiles, CI image job, guarded deploy/shutdown wrappers, grant-role, seed-demo, preflight. Owner runbook: `docs/DEPLOYMENT_RUNBOOK.md`.
 
 ## Milestones
 
@@ -26,14 +26,14 @@ B7 (cloud deployment) not started; owner runbook prepared in `docs/DEPLOYMENT_RU
 - GitHub Actions on `main` for the B6 merge: success (run 39410411597). Branch run with the new Redis tests: success (run 39411182093):
   546 node + 35 web tests, 31 infra tests, integration 66 tests (6 files, emulators + real `redis:7.4`), web and worker smoke.
 - Clean clone of the branch (`pnpm install --frozen-lockfile`, lint, typecheck, build, test): all pass locally (546/35/31).
-- Local `pnpm test:integration` cannot run on the dev machine (no Redis); CI is the evidence for it.
+- Local `pnpm test:integration` cannot run on the dev machine (no Redis); CI is the evidence for it. B7 branch locally: lint, typecheck, build pass; `pnpm test` 546 + 35 + 52 (31 infra + 21 owner-script); `owner-scripts.test.ts` 3/3 on the Firestore emulator. Docker and gcloud are not installed locally, so no image was built locally.
 - Infra flake: `waitReady()` replaces a fixed 5 s timeout; 31/31 pass in 5 of 5 runs under 16 CPU burners. Not a proof the race is gone, only that it no longer reproduces.
 - Local E2E (`docs/verification/e2e-local.mjs`, 25/25) and load figures: see README and `tests/load/results/`. Local, emulators, 20/s local queue model.
 
 ## Blockers (owner actions)
 
 1. GCP demo project, billing, budget alerts, region `europe-west1` approval (irreversible, ADR-007); run C1–C9 via `infra/CLOUD_VERIFICATION.md`.
-2. Missing for B7: Dockerfiles for `apps/api` and `apps/worker`, deploy/shutdown wrapper, `scripts/grant-role.ts` (no admin can be created in the cloud without it), tenant/membership seeding.
+2. B7 repository work is on `claude/b7-preflight` (not merged). Still unproven: the images never ran against real services, the owner scripts never touched a real project, Firestore REST (`documents:commit`) was exercised on the emulator only.
 3. Upstash (or other TLS Redis) account and secret version; Firebase Google provider and authorized domains.
 4. License choice: none added; repository stays unlicensed until the owner decides.
 5. Optional: two orphan `java` Firestore emulators from the earlier session may still hold ports 8080/9150 and 18080/19150 (`Stop-Process` needs the owner); approve or reject pnpm build scripts `re2`, `@firebase/util` (nothing needs them).
@@ -49,5 +49,5 @@ B7 (cloud deployment) not started; owner runbook prepared in `docs/DEPLOYMENT_RU
 ## Next step
 
 1. Owner: decide on the cloud project and billing; then follow `docs/DEPLOYMENT_RUNBOOK.md` (sections A–I).
-2. B7 work items (Claude/Codex): API/worker Dockerfiles, grant-role script, deploy/shutdown wrapper; then run C1–C9 with the owner.
+2. Review and merge `claude/b7-preflight`; then run C1–C9 with the owner. Owner decides: demo project, Upstash, license, `--open-signup` value for `sandbox`.
 3. Optional: run the `redis-on` load variant once a Redis exists (`QP_LOAD_REDIS_URL`); rehearse `docs/DEMO.md` against the local UI.

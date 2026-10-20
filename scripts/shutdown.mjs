@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { accessToken, cloudClient, ensurePaused, getOrAbsent } from '../infra/cloud.mjs';
+import { CloudError, accessToken, cloudClient, ensurePaused, getOrAbsent } from '../infra/cloud.mjs';
 import { specification } from '../infra/spec.mjs';
 import { EXIT, ScriptError, parseOptions, runCli } from './lib/ops.mjs';
 import { loadScope } from './lib/cloud-ops.mjs';
@@ -57,14 +57,21 @@ export async function runShutdown(values, deps) {
   const project = await client('cloudresourcemanager', `v1/projects/${config.projectId}`);
   if (project.projectNumber !== config.projectNumber || project.lifecycleState !== 'ACTIVE') throw new ScriptError(EXIT.REFUSED, 'Project identity mismatch; refusing');
   if (project.labels?.['queuepilot-environment'] !== 'demo') throw new ScriptError(EXIT.REFUSED, 'Project is not labelled queuepilot-environment=demo; refusing');
+  let failed = false;
+  // Every target is attempted so one failure never hides the state of the other.
   for (const target of targets) {
-    const current = await getOrAbsent(client, target.host, target.path);
-    if (!current) { deps.io.out(`${target.id}: absent, nothing to pause`); continue; }
-    const wasPaused = current.state === 'PAUSED';
-    await ensurePaused(client, target, current); // throws unless the re-read confirms PAUSED
-    deps.io.out(`${target.id}: ${wasPaused ? 'already paused' : 'paused'} (state=PAUSED confirmed)`);
+    try {
+      const current = await getOrAbsent(client, target.host, target.path);
+      if (!current) { deps.io.out(`${target.id}: absent, nothing to pause`); continue; }
+      const wasPaused = current.state === 'PAUSED';
+      await ensurePaused(client, target, current); // throws unless the re-read confirms PAUSED
+      deps.io.out(`${target.id}: ${wasPaused ? 'already paused' : 'paused'} (state=PAUSED confirmed)`);
+    } catch (error) {
+      failed = true;
+      deps.io.err(`${target.id}: NOT confirmed paused: ${error instanceof CloudError ? `HTTP ${error.status} ${error.code}` : String(error.message).slice(0, 200)}. Pause it manually.`);
+    }
   }
-  return EXIT.OK;
+  return failed ? EXIT.IO : EXIT.OK;
 }
 
 const token = () => {

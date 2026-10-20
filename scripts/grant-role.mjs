@@ -6,13 +6,13 @@ import { EXIT, FirestoreRest, ScriptError, TENANT_ID, UID, parseOptions, resolve
 // no API path elevates a role. Dry run is the default and touches neither credentials nor network.
 //
 //   node scripts/grant-role.mjs --project P --tenant T --uid UID                       (dry run)
-//   node scripts/grant-role.mjs --project P --tenant T --uid UID --apply --approve-project P
+//   node scripts/grant-role.mjs --project P --tenant T --uid UID --apply --approve-project P [--project-number N]
 //
 // Credentials: the owner's own `gcloud auth login` token, exactly like infra/apply.mjs (no key files).
 // Emulator: set FIRESTORE_EMULATOR_HOST and use a demo-* project.
 
 const OPTIONS = {
-  project: { type: 'string' }, 'approve-project': { type: 'string' }, tenant: { type: 'string' }, uid: { type: 'string' },
+  project: { type: 'string' }, 'project-number': { type: 'string' }, 'approve-project': { type: 'string' }, tenant: { type: 'string' }, uid: { type: 'string' },
   role: { type: 'string', default: 'admin' }, apply: { type: 'boolean', default: false },
 };
 
@@ -22,7 +22,8 @@ export function parseGrantArgs(argv, env) {
   if (!values.tenant || !TENANT_ID.test(values.tenant)) throw new ScriptError(EXIT.USAGE, 'Missing or invalid --tenant (one explicit tenant slug; wildcards are not supported)');
   if (!values.uid || !UID.test(values.uid)) throw new ScriptError(EXIT.USAGE, 'Missing or invalid --uid (a single Firebase Auth uid)');
   const target = resolveTarget({ project: values.project, approveProject: values['approve-project'], apply: values.apply, env });
-  return { target, tenant: values.tenant, uid: values.uid, apply: values.apply };
+  if (values['project-number'] !== undefined && !/^[1-9][0-9]{5,19}$/.test(values['project-number'])) throw new ScriptError(EXIT.USAGE, 'Invalid --project-number');
+  return { target, tenant: values.tenant, uid: values.uid, apply: values.apply, projectNumber: values['project-number'] };
 }
 
 /** Pure decision: what would change for this membership document. */
@@ -37,7 +38,7 @@ export function decideGrant(existing, tenant) {
 }
 
 export async function grantRole(options, deps) {
-  const { target, tenant, uid, apply } = options;
+  const { target, tenant, uid, apply, projectNumber } = options;
   const summary = `project=${target.project} (${target.mode}) tenant=${tenant} uid=${uid} role=admin`;
   if (!apply) {
     deps.io.out(`DRY RUN: nothing was read or written. Would grant: ${summary}`);
@@ -45,7 +46,7 @@ export async function grantRole(options, deps) {
     return EXIT.OK;
   }
   deps.io.out(`APPLY: ${summary}`);
-  await verifyCloudProject(target, { client: (...args) => deps.cloudClient()(...args) });
+  await verifyCloudProject(target, { client: (...args) => deps.cloudClient()(...args) }, projectNumber);
   const store = deps.firestore(target);
   const tenantDocument = await store.get(`tenants/${tenant}`);
   if (!tenantDocument) throw new ScriptError(EXIT.STATE, 'Tenant does not exist; seed it first (scripts/seed-demo.mjs)');

@@ -30,9 +30,14 @@ const env = ['QP_ENV=development', 'GCLOUD_PROJECT=demo-queuepilot', 'FIRESTORE_
 try {
   check(Number(docker('run', '--rm', '--entrypoint', 'id', image, '-u')) !== 0, 'runs as a non-root user');
 
-  const prod = spawnSync('docker', ['run', '--rm', '-e', 'QP_ENV=production', '-e', 'GCLOUD_PROJECT=demo-queuepilot', image],
-    { encoding: 'utf8', timeout: 60_000 });
-  check(prod.status !== 0 && prod.status !== null, 'refuses to start with an unsafe production configuration', `exit ${prod.status}`);
+  // Otherwise-valid cloud settings, but a demo-* project: only the production guard in loadConfig can refuse this.
+  const prodName = `${name}-prod`;
+  const prod = spawnSync('docker', ['run', '--name', prodName, '-e', 'QP_ENV=production', '-e', 'GCLOUD_PROJECT=demo-queuepilot',
+    '-e', 'QP_QUEUE_ADAPTER=cloud', '-e', 'QP_WORKER_URL=https://worker.example.com', '-e', 'QP_TASKS_OIDC_AUDIENCE=https://worker.example.com',
+    '-e', 'QP_TASKS_INVOKER_SA=invoker@demo-project.iam.gserviceaccount.com', image], { encoding: 'utf8', timeout: 60_000 });
+  try { docker('rm', '--force', prodName); } catch { /* already removed */ }
+  const reason = /Production requires a real project and no emulator overrides/.test(`${prod.stdout}${prod.stderr}`);
+  check(prod.status !== 0 && prod.status !== null && reason, 'production guard refuses a demo project (specific error)', `exit ${prod.status}`);
 
   docker('run', '-d', '--name', name, '-p', '127.0.0.1::8080', ...env.flatMap((entry) => ['-e', entry]), image);
   const hostPort = docker('port', name, '8080/tcp').split('\n')[0]?.split(':').pop();

@@ -42,7 +42,7 @@ Firestore emulator (`tests/integration/owner-scripts.test.ts`). None has been ru
 | `scripts/grant-role.mjs` | The only supported admin grant (ARCHITECTURE §11) for one uid in one existing active tenant | `--apply`, `--approve-project`; refuses tenant moves and suspended memberships |
 
 Credentials for the two Firestore scripts and the shutdown wrapper are the owner's `gcloud auth login` token (same mechanism as `cloud.mjs`); no key files. They address the project explicitly
-instead of relying on gcloud's active project, and check that the project is ACTIVE and labelled `queuepilot-environment=demo`. With `FIRESTORE_EMULATOR_HOST` set they accept only loopback hosts and `demo-*` projects.
+instead of relying on gcloud's active project, and check that the project is ACTIVE and labelled `queuepilot-environment=demo` (the Firestore scripts also compare the number when `--project-number` is given; shutdown and apply always do). With `FIRESTORE_EMULATOR_HOST` set they accept only loopback hosts and `demo-*` projects.
 Unresolved assumption: the REST calls for these scripts follow the Firestore v1 `documents:commit` API as exercised on the emulator; they have not been exercised on production Firestore.
 
 ## Ordered owner execution

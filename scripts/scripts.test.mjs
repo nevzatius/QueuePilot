@@ -117,6 +117,10 @@ test('cloud mode: a project without the demo label or with another identity is r
     await rejects(() => grantRole(parseGrantArgs(cloudArgs, {}), deps(store, { cloudClient: () => async () => info })), EXIT.REFUSED);
     assert.deepEqual(store.reads, []); assert.deepEqual(store.writes, []);
   }
+  const mismatch = new FakeStore({ 'tenants/sandbox': active });
+  await rejects(() => grantRole(parseGrantArgs([...cloudArgs, '--project-number', '999999999999'], {}), deps(mismatch, { cloudClient: () => async () => ({ ...ok, projectNumber: '123456789012' }) })), EXIT.REFUSED);
+  assert.deepEqual(mismatch.reads, []);
+  refuses(() => parseGrantArgs([...cloudArgs, '--project-number', 'abc'], {}), EXIT.USAGE);
   const store = new FakeStore({ 'tenants/sandbox': active });
   assert.equal(await grantRole(parseGrantArgs(cloudArgs, {}), deps(store, { cloudClient: () => async () => ok })), EXIT.OK);
   assert.equal(store.writes.length, 1);
@@ -309,7 +313,16 @@ test('shutdown: absent resources are skipped, wrong project identity or label st
     await rejects(() => runShutdown(shut(shutApply), sd(bad)), EXIT.REFUSED);
     assert.ok(!bad.calls.some((c) => c.startsWith('POST')));
   }
-  await assert.rejects(runShutdown(shut(shutApply), sd(fakeCloud({ stuck: true }))), /pause not confirmed/);
+  const stuck = sd(fakeCloud({ stuck: true }));
+  assert.equal(await runShutdown(shut(shutApply), stuck), EXIT.IO);
+  assert.equal(stuck.io.lines.filter((l) => /NOT confirmed paused/.test(l)).length, 2, 'both targets are attempted and reported');
+  const denied = fakeCloud();
+  const base = denied.client;
+  denied.client = async (host, path, ...rest) => { if (host === 'cloudscheduler' && path.endsWith(':pause')) throw new CloudError(403, 'PERMISSION_DENIED'); return base(host, path, ...rest); };
+  const partial = sd(denied);
+  assert.equal(await runShutdown(shut(shutApply), partial), EXIT.IO);
+  assert.equal(denied.state.queue, 'PAUSED', 'queue is still paused after the scheduler failure');
+  assert.ok(partial.io.lines.some((l) => /qp-reconcile: NOT confirmed paused: HTTP 403 PERMISSION_DENIED/.test(l)));
   assert.deepEqual(shutdownTargets(cfg).map((t) => t.id), ['qp-reconcile', 'qp-process']);
 });
 
