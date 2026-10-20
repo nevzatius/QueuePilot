@@ -109,7 +109,7 @@ function schedulerFields(value) {
   return { ...value, retryConfig: normalized, attemptDeadline: duration(value.attemptDeadline) };
 }
 
-async function ensurePaused(client, r, current) {
+export async function ensurePaused(client, r, current) {
   current ??= await client(r.host, r.path);
   const active = r.host === 'cloudtasks' ? 'RUNNING' : 'ENABLED';
   if (![active, 'PAUSED'].includes(current.state)) throw new Error(`${r.id}: unsafe or unknown state ${current.state ?? 'UNKNOWN'}`);

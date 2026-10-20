@@ -1,0 +1,2 @@
+# Docker builds on Windows checkouts must not see CRLF in line continuations.
+**/Dockerfile text eol=lf

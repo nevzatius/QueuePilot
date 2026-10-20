@@ -28,6 +28,23 @@ Only the owner runs cloud commands after reviewing the plan and approving the na
 
 Copy `infra/config.example.json` outside the repository to a local non-secret configuration, replace project ID/number and image references, and pin the numeric `redisSecretVersion`. The examples below use `D:/QueuePilot-local/cloud.json`. For plans it is safe to retain placeholder images; deployment requires existing same-project `europe-west1` Artifact Registry images pinned by SHA-256 digest.
 
+## Guarded wrappers and owner scripts (B7)
+
+All of these are dry-run by default (no credentials, no network), refuse anything ambiguous, and were tested offline (`scripts/scripts.test.mjs`) and, for the Firestore scripts, against the
+Firestore emulator (`tests/integration/owner-scripts.test.ts`). None has been run against a real project.
+
+| Script | Purpose | Guards |
+|---|---|---|
+| `scripts/preflight.mjs` | Local readiness report: PASS / FAIL / BLOCKED / NOT RUN. Never calls GCP, prints env names only | read-only |
+| `scripts/deploy.mjs` | One stage of this staged model, with a readable plan and digest, then delegates to `apply.mjs` | `--project`, `--region europe-west1`, `--approve-project`, `--approve-region`, `--approve-plan`; stage extras: `--approve-firestore-location`, `--approve-public-api` (iam), `--approve-b4-worker-image` (scheduler). Never resumes queues/jobs |
+| `scripts/shutdown.mjs` | Pauses `qp-reconcile` then `qp-process`, requires read-back `PAUSED` | project identity + demo label, `--approve-project`, `--approve-region`; deletes nothing |
+| `scripts/seed-demo.mjs` | Creates `tenants/sandbox` (create-only, idempotent); optional member membership | `--open-signup true|false` mandatory, `--apply`, `--approve-project`; never creates an admin |
+| `scripts/grant-role.mjs` | The only supported admin grant (ARCHITECTURE §11) for one uid in one existing active tenant | `--apply`, `--approve-project`; refuses tenant moves and suspended memberships |
+
+Credentials for the two Firestore scripts and the shutdown wrapper are the owner's `gcloud auth login` token (same mechanism as `cloud.mjs`); no key files. They address the project explicitly
+instead of relying on gcloud's active project, and check that the project is ACTIVE and labelled `queuepilot-environment=demo`. With `FIRESTORE_EMULATOR_HOST` set they accept only loopback hosts and `demo-*` projects.
+Unresolved assumption: the REST calls for these scripts follow the Firestore v1 `documents:commit` API as exercised on the emulator; they have not been exercised on production Firestore.
+
 ## Ordered owner execution
 
 Print the full plan with `--config` before running any apply command. Every apply requires **one** explicit stage and `--approve-project=ACTUAL_DEMO_PROJECT`. For example, after owner approval:
@@ -41,7 +58,7 @@ Run stages in this order, separately reviewing each result:
 | Stage | Managed changes / gate |
 |---|---|
 | `bootstrap` | Enable Resource Manager, Run, Tasks, Scheduler, Firestore, Firebase Rules, Secret Manager, IAM, IAM Credentials and Artifact Registry APIs; ensure Tasks/Scheduler service identities, four runtime accounts, custom queue roles, `queuepilot` Docker repository and empty `redis-url` secret metadata. Resource Manager must already be available for the initial project identity check. No secret version is created. |
-| Owner secret/image gate | Put a TLS Upstash `rediss://` connection string into Secret Manager using the console or protected stdin/file; never a command argument or checked-in file. Build/review/push existing API/worker images as owner and record immutable digests. This repository currently has skeleton services, not a deployable B3/B4 implementation. |
+| Owner secret/image gate | Put a TLS Upstash `rediss://` connection string into Secret Manager using the console or protected stdin/file; never a command argument or checked-in file. Build (`apps/api/Dockerfile`, `apps/worker/Dockerfile`, repository root as context), review and push the API/worker images as owner and record immutable digests. The images are built and smoke-run in CI only; they have never run against real Google Cloud services. |
 | `data` | Require explicit project and Firestore location approval; create regional default database with delete protection if absent; install deny-all rules, ensure three composites, exemptions and three TTL policies. Index/field writes report PENDING; rerun until reads confirm READY/ACTIVE before traffic. A successful command or completed operation alone does not prove readiness. |
 | `queue` | Ensure `qp-process` with architecture retry/rate/concurrency settings. New and existing active queues are paused and re-read; successful output includes actual state=PAUSED. There is a brief create-to-pause interval, so do not enqueue concurrently. Reapplying provisioning pauses an active demo. |
 | `access` | Project datastore grants, queue-scoped custom roles, actAs only on the Tasks invoker, secret-level accessor, and platform service-agent roles. Must precede deployment so secret mounts work. |
@@ -55,7 +72,7 @@ The deterministic worker origin is `https://qp-worker-PROJECT_NUMBER.europe-west
 
 The B4 image approval attests that the named image implements the reviewed reconciler; Cloud Run readiness alone cannot establish application correctness. Scheduler state is output-only, so creation and pause are not atomic. Before B4 approval no reconciliation job is created; after approval a brief execution window remains possible before pause. Activation is a separate owner action: these scripts never resume queues or jobs. A pause error or a read that fails to confirm PAUSED exits nonzero, including on reapplication after a partial creation.
 
-The environment names in `spec.mjs` are the infrastructure-to-B3/B4 configuration proposal, not a claim that the current skeleton implements them. Startup must reject `QP_FAULT_*` and quota fail-open in production. Application loggers must redact authorization, cookies and description. The demo runs with `QP_ENV=production` to exercise these guards.
+The environment names in `spec.mjs` are the infrastructure-to-B3/B4 configuration proposal, checked by `scripts/preflight.mjs` against `packages/core/src/config.ts` (the names exist; cloud behaviour is unverified). Startup must reject `QP_FAULT_*` and quota fail-open in production. Application loggers must redact authorization, cookies and description. The demo runs with `QP_ENV=production` to exercise these guards.
 
 ## IAM requirements
 

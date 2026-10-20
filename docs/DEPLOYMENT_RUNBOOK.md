@@ -1,23 +1,33 @@
 # B7 owner runbook: controlled Google Cloud deployment
 
-Status: **prepared offline on 2026-10-20. Nothing here has been run.** No Google Cloud project, billing, resource or credential
-was touched, and C1–C9 are all **NOT RUN**. Every command below is executed by the **owner**, after reviewing the plan it prints.
+Status: **prepared offline (2026-10-20, extended by the B7 pre-deployment hardening). Nothing here has been run against Google Cloud.**
+No Google Cloud project, billing, resource or credential was touched, and C1–C9 are all **NOT RUN**. Every command below is executed by the **owner**, after reviewing the plan it prints.
 Agents do not deploy. Source of truth for behaviour: [infra/README.md](../infra/README.md),
 [infra/CLOUD_VERIFICATION.md](../infra/CLOUD_VERIFICATION.md), [ARCHITECTURE §14](ARCHITECTURE.md), ADR-007/011/016.
 
 Command provenance: commands marked **[repo]** are implemented by scripts in this repository and covered by offline tests.
-Commands marked **[gcloud]** are standard gcloud/Firebase CLI operations that the repository documents in prose but does not script;
+Commands marked **[docker]** and **[gcloud]** are standard Docker, gcloud or Firebase CLI operations that the repository documents in prose but does not script;
 check them with `--help` before running. Placeholders in `CAPITALS` are yours to fill in; none is invented here.
 
 ## 0. Blockers that cannot be solved by commands
 
-1. **No deployable images exist.** The repository has a Dockerfile only for the cloud probe (`scripts/spike/Dockerfile`). There is no
-   Dockerfile for `apps/api` or `apps/worker`. `pnpm build` produces `apps/api/dist/index.js` and `apps/worker/dist/index.js`
-   (Node 24 ESM bundles with `ioredis` kept external, so the image must install it). A B7 work item must add and review the two
-   Dockerfiles, and the owner must push the images and record their `sha256` digests (section F). `infra/README.md` still says the services are skeletons; that sentence is stale.
+1. **Images are defined but not built or pushed by anything automated.** `apps/api/Dockerfile` and `apps/worker/Dockerfile` exist (section F).
+   CI builds both on every push and smoke-runs them, without pushing. Docker is not installed on the development machine, so no image was built locally;
+   the owner builds, pushes and records the `sha256` digests. Nothing in the repository logs in to a registry or pushes.
 2. **C1–C9 gate ADR-003/011/017 assumptions.** Run them (section D) before treating cloud behaviour as verified.
-3. **Missing admin-grant script** (`scripts/grant-role.ts`, see section G) and no tenant/membership seeding script.
+3. **Admin and demo data exist only as scripts that have never touched a real project:** `scripts/grant-role.mjs` and `scripts/seed-demo.mjs` (section G) were tested
+   offline and against the Firestore emulator only.
 4. **Owner decisions:** the demo project, billing, the irreversible Firestore region (section C), the Redis provider, and a license.
+
+## Pre-flight (local, no cloud access)
+
+```powershell
+node scripts/preflight.mjs --config D:/QueuePilot-local/cloud.json --project ACTUAL_DEMO_PROJECT --region europe-west1
+```
+
+Reports `PASS` (verified locally), `FAIL` (repository inconsistency), `BLOCKED` (a local tool, artifact or configuration is missing) and `NOT RUN`
+(external verification). It reads files and only the *names* of environment variables, never calls Google Cloud, and never prints values.
+A green preflight does not mean any cloud resource exists or that C1–C9 passed. `--strict` also fails on `BLOCKED`; `--json` prints machine-readable output.
 
 ## A. Google Cloud project
 
@@ -47,6 +57,21 @@ node infra/apply.mjs --config D:/QueuePilot-local/cloud.json --stage bootstrap -
 
 Stages run in this order, one at a time, each reviewed: `bootstrap`, (owner secret/image gate), `data`, `queue`, `access`, `deploy`, `iam`, `scheduler`.
 `--stage all` is refused.
+
+**Guarded wrapper (recommended) [repo].** `scripts/deploy.mjs` is a front end for exactly one stage. Without `--apply` it prints a readable plan, warnings
+(for example the irreversible Firestore location or the public API grant) and a *plan digest*, and uses no credentials or network. To apply, repeat the project,
+the region and the digest you reviewed; it then delegates to `infra/apply.mjs`, whose own checks (project number, `queuepilot-environment=demo` label, Firestore
+location consent, paused queue/job, pinned images) stay in force. The wrapper never resumes a queue or job.
+
+```powershell
+node scripts/deploy.mjs --config D:/QueuePilot-local/cloud.json --project ACTUAL_DEMO_PROJECT --region europe-west1 --stage bootstrap
+node scripts/deploy.mjs --config D:/QueuePilot-local/cloud.json --project ACTUAL_DEMO_PROJECT --region europe-west1 --stage bootstrap `
+  --apply --approve-project ACTUAL_DEMO_PROJECT --approve-region europe-west1 --approve-plan DIGEST_FROM_THE_PLAN
+```
+
+Extra approvals: `data` needs `--approve-firestore-location europe-west1`; `iam` needs `--approve-public-api` (it makes `qp-api` publicly invocable); `scheduler` creates
+the job only with `--approve-b4-worker-image FULL_PINNED_WORKER_IMAGE`. Only `europe-west1` is accepted. Exit codes: 0 ok, 2 usage, 3 refused, 4 state conflict, 5 I/O.
+The direct `infra/apply.mjs` commands below remain valid and equivalent.
 
 ## B. IAM (created by `bootstrap` and `access`; summary of ARCHITECTURE §14)
 
@@ -87,6 +112,8 @@ Queue `qp-process` (stage `queue`) **[repo]**: `maxDispatchesPerSecond=20`, `max
 node infra/apply.mjs --config D:/QueuePilot-local/cloud.json --stage queue --apply --approve-project=ACTUAL_DEMO_PROJECT
 ```
 
+The queue (and later the Scheduler job) is created and kept **paused**. No script in this repository resumes either; resuming is the owner's explicit action in section I.
+
 C1–C9 use isolated `qp-spike-*` resources and never touch `qp-process`. Follow [infra/CLOUD_VERIFICATION.md](../infra/CLOUD_VERIFICATION.md) exactly:
 build the probe image from `scripts/spike/Dockerfile`, print `node scripts/spike/setup.mjs --config D:/QueuePilot-local/spike.json`, apply stages
 `identities, queues, access, deploy, iam, scheduler` one at a time, then run `node scripts/spike/probe.mjs ...` per check. Volume is bounded
@@ -120,6 +147,22 @@ The design is built so wrong assumptions cost extra tasks, not wrong state (ADR-
 
 1. Owner builds and pushes immutable images to Artifact Registry repository `queuepilot` in `europe-west1` (created by `bootstrap`), reviews them,
    and records `…/queuepilot/api@sha256:…` and `…/queuepilot/worker@sha256:…` in the config. Tags are not accepted; the digest must be in this project.
+   The build context is always the **repository root** (the Dockerfiles live in the app folders):
+
+```powershell
+docker build -f apps/api/Dockerfile    -t europe-west1-docker.pkg.dev/ACTUAL_DEMO_PROJECT/queuepilot/api:REVIEWED .      # [docker]
+docker build -f apps/worker/Dockerfile -t europe-west1-docker.pkg.dev/ACTUAL_DEMO_PROJECT/queuepilot/worker:REVIEWED .   # [docker]
+gcloud auth configure-docker europe-west1-docker.pkg.dev                                                                  # [gcloud] check with --help
+docker push europe-west1-docker.pkg.dev/ACTUAL_DEMO_PROJECT/queuepilot/api:REVIEWED                                       # [docker] owner action
+docker push europe-west1-docker.pkg.dev/ACTUAL_DEMO_PROJECT/queuepilot/worker:REVIEWED                                    # [docker] owner action
+docker inspect --format "{{index .RepoDigests 0}}" europe-west1-docker.pkg.dev/ACTUAL_DEMO_PROJECT/queuepilot/api:REVIEWED  # digest to record
+```
+
+   Image design: multi-stage; `pnpm install --frozen-lockfile`; esbuild bundle `dist/server.js` with SDK packages (including `ioredis`) external; production-only
+   `node_modules` from `pnpm deploy --prod --legacy`; base `node:24.22.0-bookworm-slim` pinned by tag **and** manifest digest (override with `--build-arg NODE_IMAGE=...`; bump
+   deliberately, then rerun CI); runs as the non-root `node` user; `CMD ["node","dist/server.js"]` so SIGTERM reaches the process; no `.env`, key or credential is copied
+   (`.dockerignore`). CI proves only: build succeeds, `/health` answers, the user is non-root, SIGTERM exits 0, and `QP_ENV=production` with a demo project is refused.
+   The images were never run against real Firestore, Redis or Cloud Tasks.
 2. Deploy, worker first then API, with explicit service identities **[repo]**:
 
 ```powershell
@@ -148,16 +191,46 @@ node node_modules/firebase-tools/lib/bin/firebase.js --config infra/firebase.jso
 ```
 
    `infra/firebase.json` rewrites `/api/**` to Cloud Run `qp-api` (europe-west1) before the SPA fallback. C7 must confirm the rewrite forwards `Authorization`.
-5. Open sign-up creates `member` memberships in the `sandbox` tenant only (the `sandbox` tenant document must exist with `openSignup=true`; the infra scripts do not create tenants or memberships).
-   **Gap:** ARCHITECTURE §11 and the B3 card name `scripts/grant-role.ts` as the only way to create an admin, but that script does not exist in the repository. Until it is written (or the owner edits `memberships/{uid}` in the console), no admin account can exist and admin-only views cannot be demonstrated in the cloud.
+5. **Tenant and memberships.** Open sign-up (`POST /api/v1/session/bootstrap`) creates `member` memberships in the `sandbox` tenant only, and only if
+   `tenants/sandbox` exists with `openSignup=true`. The infra scripts do not create tenants or memberships, so seed the tenant first **[repo]**. Both scripts are dry-run by
+   default (no credentials, no network) and write only with `--apply` plus `--approve-project` repeating the exact project ID; they use your own `gcloud auth login` token, never a key file:
+
+```powershell
+# 1. Create tenants/sandbox (create-only; reruns report "unchanged"; drift is reported, never overwritten). The sign-up choice is mandatory.
+node scripts/seed-demo.mjs --project ACTUAL_DEMO_PROJECT --open-signup true
+node scripts/seed-demo.mjs --project ACTUAL_DEMO_PROJECT --open-signup true --apply --approve-project ACTUAL_DEMO_PROJECT
+# 2. Sign in once with Google in the deployed UI (this creates your member membership through bootstrap). Read your UID in
+#    Firebase console -> Authentication -> Users -> "User UID" (or the `uid` field of GET /api/v1/me).
+# 3. Promote that one user to admin of that one tenant (a separate, explicit operation; the only supported way to create an admin).
+node scripts/grant-role.mjs --project ACTUAL_DEMO_PROJECT --tenant sandbox --uid DEMO_USER_UID
+node scripts/grant-role.mjs --project ACTUAL_DEMO_PROJECT --tenant sandbox --uid DEMO_USER_UID --apply --approve-project ACTUAL_DEMO_PROJECT
+```
+
+   `seed-demo.mjs --member-uid UID` can pre-create a *member* membership instead of waiting for the first sign-in; it never creates an admin. `grant-role.mjs` requires the
+   tenant to exist and be active, refuses to move a user between tenants or to reactivate a suspended membership, accepts one explicit tenant and one uid (no wildcards),
+   and the API caches memberships for up to 30 s, so the role takes effect within that time. Both verify the project exists, is ACTIVE and carries the
+   `queuepilot-environment=demo` label before writing. Exit codes: 0 ok, 2 usage, 3 refused, 4 state conflict, 5 I/O. With `open-signup true`, anyone with a Google login can join
+   `sandbox`; choose `false` to keep sign-up closed until you are ready. Sign-up quotas for `sandbox` are `10/min/user, 30/day/user, 2000/day` (ARCHITECTURE §15) and fail
+   closed when Redis is unavailable. **Never run these against a real project until you have reviewed the dry-run output.**
 
 ## H. Rollback and shutdown
 
 Order matters: stop new work, then inspect, then remove. Pause does **not** cancel in-flight requests.
 
-1. Disable the Scheduler job and pause the queue **[gcloud]** (the repo scripts never resume or pause on demand; re-applying provisioning also pauses):
-   `gcloud scheduler jobs pause qp-reconcile --project=ACTUAL_DEMO_PROJECT --location=europe-west1` and
+1. Pause the Scheduler job and then the queue **[repo]**. `scripts/shutdown.mjs` is dry-run by default; with `--apply` it checks the project (ACTIVE, demo label, project number),
+   pauses `qp-reconcile` then `qp-process` through the existing `ensurePaused` code and requires a read-back of `PAUSED`. It never deletes or resumes anything:
+
+```powershell
+node scripts/shutdown.mjs --config D:/QueuePilot-local/cloud.json --project ACTUAL_DEMO_PROJECT --region europe-west1
+node scripts/shutdown.mjs --config D:/QueuePilot-local/cloud.json --project ACTUAL_DEMO_PROJECT --region europe-west1 `
+  --apply --approve-project ACTUAL_DEMO_PROJECT --approve-region europe-west1
+```
+
+   Equivalent manual **[gcloud]** commands: `gcloud scheduler jobs pause qp-reconcile --project=ACTUAL_DEMO_PROJECT --location=europe-west1` and
    `gcloud tasks queues pause qp-process --project=ACTUAL_DEMO_PROJECT --location=europe-west1`.
+   Scale-to-zero is already configured (min instances 0), so idle Cloud Run services are not billed for CPU, but this is **not** zero cost: Firestore storage and operations, Artifact
+   Registry images, Secret Manager, Hosting, logs and the Upstash plan remain. The wrapper does not scale, delete or disable Cloud Run services, the Hosting site, the database or the secret;
+   do those, if wanted, as separate explicit owner steps. A pause does not cancel in-flight deliveries.
 2. Disable test traffic: remove or stop the load source; pause or disable the tenant (`tenants/{id}.status`) rather than deleting data.
 3. Roll back Cloud Run: route traffic to the previous revision **[gcloud]** (`gcloud run services update-traffic SERVICE --to-revisions=PREVIOUS=100 --region=europe-west1`), or redeploy the previous pinned digest through stage `deploy`. Images are immutable digests, so rollback is exact.
 4. Preserve data: Firestore has delete protection; never delete the database, purge `qp-process` or delete the Redis secret as part of rollback. Requests already `ACCEPTED` stay durable and the reconciler re-dispatches them when re-enabled.

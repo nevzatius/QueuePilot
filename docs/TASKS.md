@@ -36,7 +36,7 @@ Status values: `todo | active | review | done | blocked`.
 | B4 Queue, worker and reconciler | Codex | A2, B3 | merged 2026-10-20 (`3b07080`); T1–T13 + races on emulator pass; cloud NOT RUN |
 | B5 Redis limits, quotas and cache | Codex | B3 | merged 2026-10-20 (`9bc5949`); real-Redis suites **PASS in GitHub Actions** (run 39410411597 and later); not run locally (no Redis on the dev machine) |
 | B6 Load tests and verify | Codex | B4, B5, B2 | local Node suite done 2026-10-20 (`tests/load`, 3 reps); **k6 and real-Redis variants NOT RUN** |
-| B7 Deploy finalisation and README drafts | Codex | all | READMEs EN/TR done; owner runbook `docs/DEPLOYMENT_RUNBOOK.md` prepared offline; **deploy/shutdown scripts, API/worker Dockerfiles and `scripts/grant-role.ts` still missing; nothing deployed** |
+| B7 Deploy finalisation and README drafts | Codex (Claude implemented on the owner's instruction) | all | **pre-deployment hardening on `claude/b7-preflight`, awaiting review/merge:** API/worker Dockerfiles + CI image job, `scripts/{preflight,deploy,shutdown,seed-demo,grant-role}.mjs` with offline and emulator tests; **nothing deployed, C1–C9 NOT RUN, the scripts never ran against a real project** |
 
 ### A1 Contracts: `packages/contracts`
 - Zod schemas for the request create body, request DTO, list/page, metrics, `me`, bootstrap, the Problem Details envelope, error codes, `TaskPayload` and the status enum with derived views.
@@ -70,7 +70,7 @@ Status values: `todo | active | review | done | blocked`.
   - **C9** queue-scoped `tasks.get` works, and removing it yields PERMISSION_DENIED, which the probe maps to PROBE_UNKNOWN.
 - **Accept:** re-running the scripts is a no-op. Results are posted in the PR for ADR-003, ADR-011 and ADR-007.
 
-### B3 Platform, auth and ingestion: `packages/core/{config,log,auth,membership,idempotency,requests,admission,metrics}`, `apps/api`, `scripts/grant-role.ts`
+### B3 Platform, auth and ingestion: `packages/core/{config,log,auth,membership,idempotency,requests,admission,metrics}`, `apps/api`, `scripts/grant-role.mjs` (implemented in B7 as `.mjs`)
 - **Accept:**
   - Idempotency replay, `409` and the logical-expiry takeover are tested.
   - Bootstrap can never yield admin (test).
@@ -124,6 +124,11 @@ Row changes under ADR-017: **T4** now ends in a new dispatch order (seq=2) with 
 - **Accept:** a fresh-project run is reproducible, the shutdown script has been tried once, and the README contains measured numbers only.
 
 **B2 merge notes.** Offline: `node --test infra/offline.test.mjs infra/targeted.test.mjs` = 31 pass. Cloud-run steps need the owner and the approvals listed in `infra/README.md`. B2 does not create the main Scheduler job until the B4 worker image is approved. Note: `infra/` tests are not wired into `pnpm test` or CI (follow-up for Codex, B3 prelude).
+
+**B7 pre-deployment hardening notes (branch `claude/b7-preflight`).** Added: `apps/api/Dockerfile`, `apps/worker/Dockerfile`, `.dockerignore`, CI job `docker-images`
+(build + `scripts/docker-smoke.mjs`, no push), `scripts/lib/{ops,cloud-ops,preflight}.mjs`, `scripts/{preflight,deploy,shutdown,seed-demo,grant-role}.mjs`,
+`scripts/scripts.test.mjs` (21 offline tests, wired into `pnpm test`), `tests/integration/owner-scripts.test.ts` (3 emulator tests, CLI exit codes). `infra/cloud.mjs` only gained an
+`export` on `ensurePaused`. Accept still open: "a fresh-project run is reproducible, the shutdown script has been tried once" (owner, needs a real demo project).
 
 ## CCR log
 

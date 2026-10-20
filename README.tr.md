@@ -118,7 +118,7 @@ sözdizimini denetler. Web uygulaması `pnpm --filter @queuepilot/web dev` ile �
 | Komut | Ne çalıştırır | Gerekenler |
 |---|---|---|
 | `pnpm lint` / `pnpm typecheck` / `pnpm build` | ESLint (bağımlılık sınırları dahil), TypeScript, paketleme | – |
-| `pnpm test` | Node birim testleri (Vitest), web jsdom testleri, çevrimdışı altyapı testleri | – |
+| `pnpm test` | Node birim testleri (Vitest), web jsdom testleri, çevrimdışı altyapı ve sahip-betiği testleri | – |
 | `pnpm test:integration` | Auth + Firestore emülatörlerini başlatır; API/worker entegrasyonu, web→API smoke, worker açılış smoke ve **gerçek Redis paketlerini** çalıştırır | Java 21, `REDIS_URL` üzerinde Redis |
 
 Gerçek Redis testleri: `tests/integration/redis.test.ts` (Lua betikleri), `tests/integration/redis-adapters.test.ts` (kota deposu,
@@ -172,13 +172,17 @@ Upstash hiç ölçülmedi. "10.000 RPS" gibi bir verim iddia edilmez ve gösteri
 ## Bulut dağıtım durumu
 
 **Başlanmadı.** Google Cloud projesi, faturalandırma, Cloud Run servisi, kuyruk, Scheduler işi veya Upstash veritabanı yoktur.
-Altyapı betikleri yazılmış ve yalnızca çevrimdışı test edilmiştir ([infra/README.md](infra/README.md),
-[infra/CLOUD_VERIFICATION.md](infra/CLOUD_VERIFICATION.md)); durum değiştiren her adım sahibin açık onayını gerektirir. Adım adım sahip
-rehberi: [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md).
+Altyapı betikleri, API ve worker Dockerfile'ları, korumalı deploy/shutdown sarmalayıcıları, yönetici yetkisi verme betiği ve demo tohum betiği
+yazılmış ve yalnızca çevrimdışı veya emülatörde test edilmiştir ([infra/README.md](infra/README.md), [infra/CLOUD_VERIFICATION.md](infra/CLOUD_VERIFICATION.md));
+durum değiştiren her adım sahibin açık onayını gerektirir ve varsayılan olarak dry-run'dır. Yerel hazırlık kontrolü: `node scripts/preflight.mjs`
+(Google Cloud'a hiç bağlanmaz). Adım adım sahip rehberi: [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md). Yerel emülatör demosu ile bulut
+dağıtımı farklı şeylerdir: bugün gösterilen yalnızca ilkidir; bulut tarafı doğrulanmamıştır (C1-C9, gerçek Google OAuth, Cloud Run/Tasks davranışı ve
+Upstash/TLS ÇALIŞTIRILMADI).
 
 ## GitHub Actions doğrulaması
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) her push ve pull request'te Ubuntu üzerinde Node 24, Java 21 ve `redis:7.4-alpine`
 servisiyle çalışır: dondurulmuş lockfile ile kurulum, lint, typecheck, birim testleri (node, web, altyapı), build, ardından entegrasyon
-paketi (emülatörler, gerçek Redis, smoke testleri) ve Node ESM çıktı kontrolü. Son sonuç için deponun Actions sekmesine bakın; bu README
-sonucu sabit olarak yazmaz.
+paketi (emülatörler, gerçek Redis, smoke testleri) ve Node ESM çıktı kontrolü. İkinci bir iş, API ve worker imajlarını depo kökünden derler
+(`docker build -f apps/<app>/Dockerfile .`), yalnızca demo ayarlarıyla smoke testten geçirir; hiçbir registry'ye giriş yapmaz veya push etmez. Son sonuç
+için deponun Actions sekmesine bakın; bu README sonucu sabit olarak yazmaz.

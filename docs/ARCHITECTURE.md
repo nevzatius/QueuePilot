@@ -183,7 +183,7 @@ The worker side is bounded by queue `maxDispatchesPerSecond` and `maxConcurrentD
 - Google is the only sign-in provider. `verifyIdToken` (no revocation check) must report `email_verified` and `sign_in_provider=google.com`.
 - The source of truth for tenant and role is `memberships/{uid}`. Custom claims are not used.
 - `POST /api/v1/session/bootstrap` (idempotent) creates `{tenant: sandbox, role: member}` only when `tenants/sandbox.openSignup==true`. The role is a constant, never an input.
-- Admin is granted **only** by `scripts/grant-role.ts`, run by the owner with their own ADC credentials. No API path elevates a role.
+- Admin is granted **only** by `scripts/grant-role.mjs` (implemented as `.mjs` like the other repository scripts), run by the owner with their own `gcloud auth login` credentials (no key files). It is dry-run by default, needs `--apply` and an exact `--approve-project`, grants one uid in one existing active tenant, and refuses to move or reactivate memberships. The demo tenant is created by `scripts/seed-demo.mjs`. No API path elevates a role.
 - No membership → `403 ONBOARDING_REQUIRED` (except `GET /me` and the bootstrap endpoint).
 - **Cache consistency guarantee:**
   - Positive membership and tenant entries are cached per instance for at most `QP_MEMBERSHIP_CACHE_TTL=30s`.

@@ -53,3 +53,22 @@ jobs:
         run: |
           node --check apps/api/dist/index.js
           node --check apps/worker/dist/index.js
+
+  # Builds both runtime images from the repository root and smoke-runs them with demo-only settings.
+  # Images are built locally on the runner only: no registry login, no push, no cloud credentials.
+  docker-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [api, worker]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build image (not pushed)
+        run: docker build -f apps/${{ matrix.app }}/Dockerfile -t queuepilot-${{ matrix.app }}:ci .
+      - name: Smoke-run image (non-root, /health, SIGTERM, unsafe production config refused)
+        run: node scripts/docker-smoke.mjs --app ${{ matrix.app }} --image queuepilot-${{ matrix.app }}:ci

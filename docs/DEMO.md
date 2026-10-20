@@ -4,6 +4,10 @@ Audience: software engineers, architects, technical recruiters. Length: about 10
 **Label this clearly as a local emulator demonstration.** Sign-in uses the Firebase Auth *emulator's* Google provider, Firestore is the emulator,
 the queue is an in-process model rate-limited to 20 dispatches/s, and nothing runs on Google Cloud. Real Google OAuth, Cloud Run, Cloud Tasks and Upstash have not been exercised.
 
+**Local emulator demo versus cloud deployment.** This script demonstrates the first only. Preparing a cloud deployment (Dockerfiles, `scripts/deploy.mjs`,
+`scripts/seed-demo.mjs`, `scripts/grant-role.mjs`, `scripts/preflight.mjs`; see [DEPLOYMENT_RUNBOOK.md](DEPLOYMENT_RUNBOOK.md)) does not change what can be claimed:
+no cloud demo has been run, and a future cloud demo will need its own rehearsal and its own, separately labelled numbers.
+
 ## What is verified versus what is rehearsed
 
 | Step | Backed by | Status |
@@ -11,6 +15,7 @@ the queue is an in-process model rate-limited to 20 dispatches/s, and nothing ru
 | Accept → process → complete, replay, 409, duplicate delivery, cross-tenant/user isolation, Redis-down fail-closed | `docs/verification/e2e-local.mjs`, 25 checks against real built API + worker + emulators | verified 2026-10-20 (records in `docs/PROJECT_STATE.md`) |
 | Quota, burst and fail-closed behaviour on real Redis | `tests/integration/redis*.test.ts`, `apps/api/test/integration/redis-quota.test.ts` | PASS in GitHub Actions (see the Actions tab) |
 | Spike / recovery numbers | `tests/load/results/2026-10-20T10-19-00-417Z/REPORT.md` | local, 3 repetitions, emulators |
+| API/worker container images build, answer `/health`, run non-root and exit 0 on SIGTERM | `docker-images` CI job (`scripts/docker-smoke.mjs`) | see the Actions tab; not run locally (no Docker on the dev machine) |
 | Click-through in the React UI against the live local API | – | **not rehearsed by the maintainers yet**; do a dry run before presenting |
 
 ## Setup (before the audience arrives)
