@@ -132,7 +132,7 @@ commands and environment for a fully local pair (local queue pump, local worker 
 | Command | What it runs | Needs |
 |---|---|---|
 | `pnpm lint` / `pnpm typecheck` / `pnpm build` | ESLint (incl. dependency boundaries), TypeScript, bundles | – |
-| `pnpm test` | Node unit tests (Vitest), web jsdom tests, offline infrastructure tests | – |
+| `pnpm test` | Node unit tests (Vitest), web jsdom tests, offline infrastructure and owner-script tests | – |
 | `pnpm test:integration` | Starts Auth + Firestore emulators and runs API/worker integration, web→API smoke, worker startup smoke, **real-Redis suites** | Java 21, Redis on `REDIS_URL` |
 
 Real-Redis tests are `tests/integration/redis.test.ts` (Lua scripts), `tests/integration/redis-adapters.test.ts`
@@ -186,13 +186,16 @@ demonstrated.
 ## Cloud deployment status
 
 **Not started.** No Google Cloud project, billing, Cloud Run service, queue, Scheduler job or Upstash database exists.
-Infrastructure scripts are written and tested offline only ([infra/README.md](infra/README.md),
-[infra/CLOUD_VERIFICATION.md](infra/CLOUD_VERIFICATION.md)); every state-changing step needs explicit owner approval. The step-by-step
-owner runbook is in [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md).
+Infrastructure scripts, API and worker Dockerfiles, guarded deploy/shutdown wrappers, an admin-grant script and a demo seed script are written and
+tested offline or on emulators only ([infra/README.md](infra/README.md), [infra/CLOUD_VERIFICATION.md](infra/CLOUD_VERIFICATION.md)); every state-changing
+step needs explicit owner approval and is dry-run by default. Check readiness locally with `node scripts/preflight.mjs` (it never contacts Google Cloud unless the owner adds `--run`, which only reads).
+The step-by-step owner runbook is in [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md). The local emulator demo and a cloud deployment are different
+things: the former is what this repository demonstrates today, the latter is unverified (C1-C9, real Google OAuth, Cloud Run/Tasks behaviour and Upstash/TLS are NOT RUN).
 
 ## GitHub Actions verification
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and pull request on Ubuntu with Node 24, Java 21 and a
 `redis:7.4-alpine` service: frozen-lockfile install, lint, typecheck, unit tests (node, web, infrastructure), build, then the
-integration suite (emulators, real Redis, smoke tests) and a Node ESM artifact check. Check the Actions tab of the
-repository for the latest run; this README does not hard-code a result.
+integration suite (emulators, real Redis, smoke tests) and a Node ESM artifact check. A second job builds the API and worker images from the
+repository root (`docker build -f apps/<app>/Dockerfile .`), smoke-runs them with demo-only settings and never pushes or logs in to a registry. Check the
+Actions tab of the repository for the latest run; this README does not hard-code a result.

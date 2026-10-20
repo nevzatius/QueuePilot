@@ -1,0 +1,31 @@
+# QueuePilot worker image. Build context MUST be the repository root:
+#   docker build -f apps/worker/Dockerfile -t queuepilot-worker:local .
+# Nothing here pushes, deploys or touches any cloud resource.
+
+# Base image: see apps/api/Dockerfile (same tag and digest, bumped together).
+ARG NODE_IMAGE=node:24.22.0-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
+
+FROM ${NODE_IMAGE} AS build
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 CI=true
+RUN corepack enable
+WORKDIR /repo
+COPY . .
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @queuepilot/worker build
+RUN pnpm --filter @queuepilot/worker deploy --prod --legacy /out \
+ && rm -rf /out/node_modules/@queuepilot
+
+FROM ${NODE_IMAGE} AS runtime
+ENV NODE_ENV=production
+WORKDIR /app
+# Files stay root-owned: the runtime user can read but not modify the application or its dependencies.
+COPY --from=build /out/package.json ./package.json
+COPY --from=build /out/node_modules ./node_modules
+COPY --from=build /repo/apps/worker/dist/server.js /repo/apps/worker/dist/server.js.map ./dist/
+USER node
+EXPOSE 8080
+# /health is exempt from caller authentication (apps/worker/src/app.ts) and does no IO.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+# node as PID 1 receives SIGTERM; apps/worker/src/index.ts closes the app and the Firestore client.
+CMD ["node", "dist/server.js"]

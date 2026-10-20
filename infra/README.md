@@ -28,6 +28,23 @@ Only the owner runs cloud commands after reviewing the plan and approving the na
 
 Copy `infra/config.example.json` outside the repository to a local non-secret configuration, replace project ID/number and image references, and pin the numeric `redisSecretVersion`. The examples below use `D:/QueuePilot-local/cloud.json`. For plans it is safe to retain placeholder images; deployment requires existing same-project `europe-west1` Artifact Registry images pinned by SHA-256 digest.
 
+## Guarded wrappers and owner scripts (B7)
+
+All of these are dry-run by default and refuse anything ambiguous. They were tested offline (`scripts/scripts.test.mjs`, fake Auth/Firestore/cloud clients) and, for the two
+data scripts, against the Firestore and Auth emulators (`tests/integration/owner-scripts.test.ts`). None has been run against a real project.
+
+| Script | Purpose | Guards |
+|---|---|---|
+| `scripts/preflight.mjs` | Local readiness report: PASS / FAIL / BLOCKED / NOT RUN, prints env names only. Opt-in `--run`: GET-only comparison of the real project with the plan (PASS / FAIL / ABSENT / UNKNOWN) | read-only; `--run` needs `--config`, `--region europe-west1` and an exact `--approve-project`; a wrapper refuses any non-GET |
+| `scripts/deploy.mjs` | One stage of this staged model, with a readable plan and digest, then delegates to `apply.mjs` | `--project`, `--region europe-west1`, `--approve-project`, `--approve-region`, `--approve-plan`; stage extras: `--approve-firestore-location`, `--approve-public-api` (iam), `--approve-b4-worker-image` (scheduler). Never resumes queues/jobs |
+| `scripts/shutdown.mjs` | Pauses `qp-reconcile` then `qp-process`, requires read-back `PAUSED`. Optional `--revoke-public-api` removes only `allUsers` from `qp-api` invoker (etag, re-read) | project identity + demo label, `--approve-project`, `--approve-region`; deletes, purges and resumes nothing |
+| `scripts/seed-demo.mjs` | Creates `tenants/sandbox` only (create-only, idempotent); a different existing document is reported as DRIFT, never overwritten | `--open-signup true|false` mandatory, `--apply`, `--approve-project`; never creates memberships or admins |
+| `scripts/grant-role.mjs` | The only supported admin grant (ARCHITECTURE §11) for one user (by `--uid` or `--email`) in one existing active tenant. Read-only dry run resolves and checks the account (one match, enabled, verified email, Google provider) | `--apply`, `--approve-project`, `--approve-uid` equal to the uid the dry run printed; refuses tenant moves and suspended memberships; no claims or IAM |
+
+Credentials for the two Firestore scripts and the shutdown wrapper are the owner's `gcloud auth login` token (same mechanism as `cloud.mjs`); no key files. They address the project explicitly
+instead of relying on gcloud's active project, and check that the project is ACTIVE and labelled `queuepilot-environment=demo` (the data scripts require `--project-number` for cloud writes; shutdown and apply always compare it). With `FIRESTORE_EMULATOR_HOST` or `FIREBASE_AUTH_EMULATOR_HOST` set they accept only loopback hosts and `demo-*` projects, and refuse half-emulated targets; `grant-role` needs both emulators.
+Unresolved assumption: the REST calls for these scripts follow the Firestore v1 `documents:commit` API as exercised on the emulator; they have not been exercised on production Firestore.
+
 ## Ordered owner execution
 
 Print the full plan with `--config` before running any apply command. Every apply requires **one** explicit stage and `--approve-project=ACTUAL_DEMO_PROJECT`. For example, after owner approval:
@@ -41,7 +58,7 @@ Run stages in this order, separately reviewing each result:
 | Stage | Managed changes / gate |
 |---|---|
 | `bootstrap` | Enable Resource Manager, Run, Tasks, Scheduler, Firestore, Firebase Rules, Secret Manager, IAM, IAM Credentials and Artifact Registry APIs; ensure Tasks/Scheduler service identities, four runtime accounts, custom queue roles, `queuepilot` Docker repository and empty `redis-url` secret metadata. Resource Manager must already be available for the initial project identity check. No secret version is created. |
-| Owner secret/image gate | Put a TLS Upstash `rediss://` connection string into Secret Manager using the console or protected stdin/file; never a command argument or checked-in file. Build/review/push existing API/worker images as owner and record immutable digests. This repository currently has skeleton services, not a deployable B3/B4 implementation. |
+| Owner secret/image gate | Put a TLS Upstash `rediss://` connection string into Secret Manager using the console or protected stdin/file; never a command argument or checked-in file. Build (`apps/api/Dockerfile`, `apps/worker/Dockerfile`, repository root as context), review and push the API/worker images as owner and record immutable digests. The images are built and smoke-run in CI only; they have never run against real Google Cloud services. |
 | `data` | Require explicit project and Firestore location approval; create regional default database with delete protection if absent; install deny-all rules, ensure three composites, exemptions and three TTL policies. Index/field writes report PENDING; rerun until reads confirm READY/ACTIVE before traffic. A successful command or completed operation alone does not prove readiness. |
 | `queue` | Ensure `qp-process` with architecture retry/rate/concurrency settings. New and existing active queues are paused and re-read; successful output includes actual state=PAUSED. There is a brief create-to-pause interval, so do not enqueue concurrently. Reapplying provisioning pauses an active demo. |
 | `access` | Project datastore grants, queue-scoped custom roles, actAs only on the Tasks invoker, secret-level accessor, and platform service-agent roles. Must precede deployment so secret mounts work. |
@@ -55,7 +72,7 @@ The deterministic worker origin is `https://qp-worker-PROJECT_NUMBER.europe-west
 
 The B4 image approval attests that the named image implements the reviewed reconciler; Cloud Run readiness alone cannot establish application correctness. Scheduler state is output-only, so creation and pause are not atomic. Before B4 approval no reconciliation job is created; after approval a brief execution window remains possible before pause. Activation is a separate owner action: these scripts never resume queues or jobs. A pause error or a read that fails to confirm PAUSED exits nonzero, including on reapplication after a partial creation.
 
-The environment names in `spec.mjs` are the infrastructure-to-B3/B4 configuration proposal, not a claim that the current skeleton implements them. Startup must reject `QP_FAULT_*` and quota fail-open in production. Application loggers must redact authorization, cookies and description. The demo runs with `QP_ENV=production` to exercise these guards.
+The environment names in `spec.mjs` are the infrastructure-to-B3/B4 configuration proposal, checked by `scripts/preflight.mjs` against `packages/core/src/config.ts` (the names exist; cloud behaviour is unverified). Startup must reject `QP_FAULT_*` and quota fail-open in production. Application loggers must redact authorization, cookies and description. The demo runs with `QP_ENV=production` to exercise these guards.
 
 ## IAM requirements
 
@@ -93,5 +110,6 @@ Shutdown: pause Scheduler jobs and all queues first, inspect in-flight work (pau
 - [Firestore index/TTL definitions](https://firebase.google.com/docs/reference/firestore/indexes), [TTL lifecycle](https://docs.cloud.google.com/firestore/native/docs/ttl), [Cloud Run deterministic URLs](https://docs.cloud.google.com/run/docs/custom-urls), [Hosting Run rewrite](https://firebase.google.com/docs/hosting/cloud-run).
 - IAM policy REST reads: [service accounts (POST, empty body, query options)](https://docs.cloud.google.com/iam/docs/reference/rest/v1/projects.serviceAccounts/getIamPolicy), [queues (POST, body options)](https://docs.cloud.google.com/tasks/docs/reference/rest/v2/projects.locations.queues/getIamPolicy), [projects (POST, body options)](https://docs.cloud.google.com/resource-manager/reference/rest/v1/projects/getIamPolicy), [Run services (GET)](https://docs.cloud.google.com/run/docs/reference/rest/v2/projects.locations.services/getIamPolicy), [secrets (GET)](https://docs.cloud.google.com/secret-manager/docs/reference/rest/v1/projects.secrets/getIamPolicy).
 - [Scheduler retry defaults and output-only state](https://docs.cloud.google.com/scheduler/docs/reference/rest/v1/projects.locations.jobs).
+- B7 owner scripts: [Identity Toolkit accounts:lookup (POST, `firebaseauth.users.get`)](https://docs.cloud.google.com/identity-platform/docs/reference/rest/v1/projects.accounts/lookup), [billingInfo (GET)](https://docs.cloud.google.com/billing/docs/reference/rest/v1/projects/getBillingInfo), [Service Usage services.get (GET, project number)](https://docs.cloud.google.com/service-usage/docs/reference/rest/v1/services/get), [Artifact Registry dockerImages (`image@sha256:digest`)](https://docs.cloud.google.com/artifact-registry/docs/reference/rest/v1/projects.locations.repositories.dockerImages), [Run services setIamPolicy (POST, default mask `bindings,etag`)](https://docs.cloud.google.com/run/docs/reference/rest/v2/projects.locations.services/setIamPolicy). Reviewed 2026-10-20.
 
 These references support configuration and test expectations; they are not evidence that C1–C9 ran in this project.

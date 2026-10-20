@@ -1,0 +1,36 @@
+# Build context is the repository root. Keep sources, manifests and the lockfile; drop everything else.
+# Secrets and local state must never reach an image layer.
+.git
+.github
+.claude
+**/node_modules
+**/dist
+**/coverage
+**/.vite
+**/*.tsbuildinfo
+**/*.log
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+**/service-account*.json
+**/*-credentials.json
+**/*credentials*.json
+**/application_default_credentials.json
+**/*.env
+**/.envrc
+**/.npmrc
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+.gcloud
+.firebase
+
+# Not needed to build or run the API/worker images.
+docs
+tests
+infra
+apps/web/smoke
+**/Dockerfile
+.dockerignore
