@@ -18,9 +18,10 @@ RUN pnpm --filter @queuepilot/worker deploy --prod --legacy /out \
 FROM ${NODE_IMAGE} AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
-COPY --from=build --chown=node:node /out/package.json ./package.json
-COPY --from=build --chown=node:node /out/node_modules ./node_modules
-COPY --from=build --chown=node:node /repo/apps/worker/dist/server.js /repo/apps/worker/dist/server.js.map ./dist/
+# Files stay root-owned: the runtime user can read but not modify the application or its dependencies.
+COPY --from=build /out/package.json ./package.json
+COPY --from=build /out/node_modules ./node_modules
+COPY --from=build /repo/apps/worker/dist/server.js /repo/apps/worker/dist/server.js.map ./dist/
 USER node
 EXPOSE 8080
 # /health is exempt from caller authentication (apps/worker/src/app.ts) and does no IO.

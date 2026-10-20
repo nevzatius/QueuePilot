@@ -25,9 +25,10 @@ RUN pnpm --filter @queuepilot/api deploy --prod --legacy /out \
 FROM ${NODE_IMAGE} AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
-COPY --from=build --chown=node:node /out/package.json ./package.json
-COPY --from=build --chown=node:node /out/node_modules ./node_modules
-COPY --from=build --chown=node:node /repo/apps/api/dist/server.js /repo/apps/api/dist/server.js.map ./dist/
+# Files stay root-owned: the runtime user can read but not modify the application or its dependencies.
+COPY --from=build /out/package.json ./package.json
+COPY --from=build /out/node_modules ./node_modules
+COPY --from=build /repo/apps/api/dist/server.js /repo/apps/api/dist/server.js.map ./dist/
 # Non-root. No environment files, keys or credentials are copied; configuration arrives through
 # environment variables and Secret Manager mounts at deploy time.
 USER node
