@@ -36,7 +36,7 @@ Status values: `todo | active | review | done | blocked`.
 | B4 Queue, worker and reconciler | Codex | A2, B3 | merged 2026-10-20 (`3b07080`); T1–T13 + races on emulator pass; cloud NOT RUN |
 | B5 Redis limits, quotas and cache | Codex | B3 | merged 2026-10-20 (`9bc5949`); real-Redis suites **PASS in GitHub Actions** (run 39410411597 and later); not run locally (no Redis on the dev machine) |
 | B6 Load tests and verify | Codex | B4, B5, B2 | local Node suite done 2026-10-20 (`tests/load`, 3 reps); **k6 and real-Redis variants NOT RUN** |
-| B7 Deploy finalisation and README drafts | Codex (Claude implemented on the owner's instruction) | all | **pre-deployment hardening on `claude/b7-preflight`, awaiting review/merge:** API/worker Dockerfiles + CI image job, `scripts/{preflight,deploy,shutdown,seed-demo,grant-role}.mjs` with offline and emulator tests; **nothing deployed, C1–C9 NOT RUN, the scripts never ran against a real project** |
+| B7 Deploy finalisation and README drafts | Codex (Claude implemented on the owner's instruction) | all | **pre-deployment hardening on `claude/b7-predeploy-hardening` (superset of `claude/b7-preflight`), not merged:** Dockerfiles + CI image job, `scripts/{preflight,deploy,shutdown,seed-demo,grant-role}.mjs` with unit and emulator tests; **nothing deployed, C1–C9 NOT RUN, the scripts never ran against a real project** |
 
 ### A1 Contracts: `packages/contracts`
 - Zod schemas for the request create body, request DTO, list/page, metrics, `me`, bootstrap, the Problem Details envelope, error codes, `TaskPayload` and the status enum with derived views.
@@ -130,6 +130,15 @@ Row changes under ADR-017: **T4** now ends in a new dispatch order (seq=2) with 
 `scripts/scripts.test.mjs` (21 offline tests, wired into `pnpm test`), `tests/integration/owner-scripts.test.ts` (3 emulator tests, CLI exit codes). `infra/cloud.mjs` only gained an
 `export` on `ensurePaused`. Accept still open: "a fresh-project run is reproducible, the shutdown script has been tried once" (owner, needs a real demo project).
 
+**B7 hardening follow-up (branch `claude/b7-predeploy-hardening`, 2026-10-20 session 4).** Built on `claude/b7-preflight` (another Claude session, commits
+`a40e2e1`, `9396642`) after the owner chose to build on it. Gaps closed against the owner's B7 checklist: `grant-role` resolves `--uid`/`--email` through Identity Toolkit
+`accounts:lookup` and requires one enabled, verified, Google-provider account, a read-only dry run and `--approve-uid`; `seed-demo` creates the tenant only and reports DRIFT;
+`preflight --run` is GET-only cloud comparison; `shutdown --revoke-public-api`; data scripts require `--project-number` for cloud writes; runtime image files are root-owned;
+`docker-smoke` uses production-shaped settings (`scripts/lib/smoke-env.mjs`, schema-checked by `tests/unit/smoke-env.test.ts`) and checks guards, worker 403, file set and
+read-only files. Security review (security-reviewer, read-only): no real findings; four low-severity hardening items applied, two noted (apply.mjs `iam` stage has no
+public-API gate of its own, pre-existing; `corepack enable` fetches the pnpm version named in `packageManager` without a hash pin). Accept still open: fresh-project run and
+one real shutdown (owner, needs a demo project).
+
 ## CCR log
 
 _(none)_  T1 row note: ADR-017 gives seq=2 after a lost API enqueue (the card text above still says seq=1).
@@ -143,3 +152,9 @@ _(none)_  T1 row note: ADR-017 gives seq=2 after a lost API enqueue (the card te
 - 2026-10-20: B4 (`577263a`, merge `3b07080`) and B5 (`35efa81`, merge `9bc5949`) merged with `--no-ff`. Codex's sandbox could not spawn processes or commit, so Claude ran every check and committed. Integration fixes by Claude: web smoke config root + `SMOKE_API_PORT` (`7ce2252`; the smoke step had found no files before), `queue.test.ts` fixture timing, root workspace deps `@queuepilot/core` and `@queuepilot/contracts` (`71f060d`, `47e4fd1`; hand-made symlinks had hidden the missing links), `ioredis` kept external in API/worker bundles (`a15020b`; the bundled worker crashed at startup). ADR-018 added from the B5 handoff.
 - 2026-10-20: B6 local load suite (`tests/load`, Node, no k6). Written by Claude directly (Codex not available in this session), so no Codex-owned path was touched by anyone else. Results in `tests/load/results/`. Intermittent `infra/offline.test.mjs` failure reproduced under CPU load: 5 s timeouts around `fork`/`spawnSync` of `scripts/spike/server.mjs` (warm start 0.7 s). Follow-up for the infra owner: raise those timeouts (lines ~198 and ~222).
 - 2026-10-20 (session 2): pushed B6 (`6bfd81a`; origin was at `8c5b1dd` because the B6 merge had never been pushed; fast-forward, no divergence). Fixed the `infra/offline.test.mjs` flake (`abf0919`): `waitReady()` races the ready message against child exit with captured stderr and a 30 s hang bound; 31/31 pass 5 of 5 times under 16 CPU burners on 12 cores. Added real-Redis tests `tests/integration/redis-adapters.test.ts` (9) and `apps/api/test/integration/redis-quota.test.ts` (5, HTTP + Firestore emulator + Redis); both passed first time in CI (run 39411182093). README.md rewritten, README.tr.md and `docs/DEMO.md`, `docs/DEPLOYMENT_RUNBOOK.md` added. Claude wrote all of it directly (Codex sandbox cannot run processes here), including files under Codex-owned paths (`infra/`, `apps/api/test/`, `tests/`, `README*.md`), on the owner's explicit instruction. No license added: owner decision pending.
+- 2026-10-20 (session 4): B7 pre-deployment hardening on `claude/b7-predeploy-hardening`, pushed as a feature branch only (owner-approved in-session); `main` untouched and not
+  pushed. Found that a parallel session had created and pushed `claude/b7-preflight` meanwhile; the owner chose to build on it rather than duplicate. Local: lint, typecheck,
+  test (node + web + infra + owner scripts), build pass; owner-script emulator suite 3/3 (Firestore + Auth emulators on alternate ports, because an orphan emulator from the
+  parallel session holds 8080); pruned runtime (`pnpm deploy --prod --legacy`, no `@queuepilot`) started on Windows with production-shaped settings: 14/14 checks. Docker,
+  gcloud and Redis are not installed locally; image build/smoke and full integration are CI evidence only. First branch CI run (39434575888) failed only on an over-broad smoke
+  file check that flagged a third-party `*.test.d.ts` under `node_modules`; the check now scans repository-origin paths and keeps the workspace-source and `re2` checks.

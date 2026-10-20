@@ -15,7 +15,7 @@ no cloud demo has been run, and a future cloud demo will need its own rehearsal 
 | Accept → process → complete, replay, 409, duplicate delivery, cross-tenant/user isolation, Redis-down fail-closed | `docs/verification/e2e-local.mjs`, 25 checks against real built API + worker + emulators | verified 2026-10-20 (records in `docs/PROJECT_STATE.md`) |
 | Quota, burst and fail-closed behaviour on real Redis | `tests/integration/redis*.test.ts`, `apps/api/test/integration/redis-quota.test.ts` | PASS in GitHub Actions (see the Actions tab) |
 | Spike / recovery numbers | `tests/load/results/2026-10-20T10-19-00-417Z/REPORT.md` | local, 3 repetitions, emulators |
-| API/worker container images build, answer `/health`, run non-root and exit 0 on SIGTERM | `docker-images` CI job (`scripts/docker-smoke.mjs`) | see the Actions tab; not run locally (no Docker on the dev machine) |
+| API/worker container images build, answer `/health` with production-shaped settings, refuse unsafe production config, worker rejects unauthenticated calls, non-root over read-only files, exit 0 on SIGTERM | `docker-images` CI job (`scripts/docker-smoke.mjs`) | CI only (see the Actions tab); not run locally (no Docker on the dev machine) |
 | Click-through in the React UI against the live local API | – | **not rehearsed by the maintainers yet**; do a dry run before presenting |
 
 ## Setup (before the audience arrives)

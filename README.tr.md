@@ -175,7 +175,7 @@ Upstash hiç ölçülmedi. "10.000 RPS" gibi bir verim iddia edilmez ve gösteri
 Altyapı betikleri, API ve worker Dockerfile'ları, korumalı deploy/shutdown sarmalayıcıları, yönetici yetkisi verme betiği ve demo tohum betiği
 yazılmış ve yalnızca çevrimdışı veya emülatörde test edilmiştir ([infra/README.md](infra/README.md), [infra/CLOUD_VERIFICATION.md](infra/CLOUD_VERIFICATION.md));
 durum değiştiren her adım sahibin açık onayını gerektirir ve varsayılan olarak dry-run'dır. Yerel hazırlık kontrolü: `node scripts/preflight.mjs`
-(Google Cloud'a hiç bağlanmaz). Adım adım sahip rehberi: [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md). Yerel emülatör demosu ile bulut
+(sahip `--run` eklemedikçe Google Cloud'a bağlanmaz; `--run` yalnızca okur). Adım adım sahip rehberi: [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md). Yerel emülatör demosu ile bulut
 dağıtımı farklı şeylerdir: bugün gösterilen yalnızca ilkidir; bulut tarafı doğrulanmamıştır (C1-C9, gerçek Google OAuth, Cloud Run/Tasks davranışı ve
 Upstash/TLS ÇALIŞTIRILMADI).
 

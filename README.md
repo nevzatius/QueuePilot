@@ -188,7 +188,7 @@ demonstrated.
 **Not started.** No Google Cloud project, billing, Cloud Run service, queue, Scheduler job or Upstash database exists.
 Infrastructure scripts, API and worker Dockerfiles, guarded deploy/shutdown wrappers, an admin-grant script and a demo seed script are written and
 tested offline or on emulators only ([infra/README.md](infra/README.md), [infra/CLOUD_VERIFICATION.md](infra/CLOUD_VERIFICATION.md)); every state-changing
-step needs explicit owner approval and is dry-run by default. Check readiness locally with `node scripts/preflight.mjs` (it never contacts Google Cloud).
+step needs explicit owner approval and is dry-run by default. Check readiness locally with `node scripts/preflight.mjs` (it never contacts Google Cloud unless the owner adds `--run`, which only reads).
 The step-by-step owner runbook is in [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md). The local emulator demo and a cloud deployment are different
 things: the former is what this repository demonstrates today, the latter is unverified (C1-C9, real Google OAuth, Cloud Run/Tasks behaviour and Upstash/TLS are NOT RUN).
 
