@@ -575,6 +575,14 @@ test('preflight: repository passes, cloud items stay NOT_RUN and are never repor
   assert.equal(summarize(results, true).exitCode, 2); // --strict turns BLOCKED into a failure
 });
 
+test('preflight: .dockerignore parsing is CRLF-safe and requires **/.npmrc', () => {
+  const lf = readFileSync(join(root, '.dockerignore'), 'utf8').replace(/\r\n/g, '\n');
+  const withIgnore = (text) => (p) => (p === '.dockerignore' ? text : readFileSync(join(root, p), 'utf8'));
+  assert.equal(status(runPreflight(realCtx({ read: withIgnore(lf.replace(/\n/g, '\r\n')) })), 'dockerfiles'), 'PASS');
+  assert.equal(status(runPreflight(realCtx({ read: withIgnore(lf.replace(/\n/g, '\r\n').replace('**/.npmrc\r\n', '')) })), 'dockerfiles'), 'FAIL');
+  assert.equal(status(runPreflight(realCtx({ read: withIgnore(`${lf}package.json\r\n`.replace(/\n(?!$)/g, '\r\n')) })), 'dockerfiles'), 'FAIL');
+});
+
 test('preflight: detects broken Dockerfiles, key files, missing artifacts and bad arguments', () => {
   const read = (p) => (p === 'apps/api/Dockerfile' ? readFileSync(join(root, p), 'utf8').replace('USER node', '') : readFileSync(join(root, p), 'utf8'));
   assert.equal(status(runPreflight(realCtx({ read })), 'dockerfiles'), 'FAIL');

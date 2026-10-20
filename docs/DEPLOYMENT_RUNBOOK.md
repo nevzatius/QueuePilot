@@ -83,8 +83,9 @@ node scripts/deploy.mjs --config D:/QueuePilot-local/cloud.json --project ACTUAL
 ```
 
 Extra approvals: `data` needs `--approve-firestore-location europe-west1`; `iam` needs `--approve-public-api` (it makes `qp-api` publicly invocable); `scheduler` creates
-the job only with `--approve-b4-worker-image FULL_PINNED_WORKER_IMAGE`. Only `europe-west1` is accepted. Exit codes: 0 ok, 2 usage, 3 refused, 4 state conflict, 5 I/O.
-The direct `infra/apply.mjs` commands below remain valid and equivalent.
+the job only with `--approve-b4-worker-image FULL_PINNED_WORKER_IMAGE`. Only `europe-west1` is accepted. Exit codes: 0 ok, 1 `infra/apply.mjs` failure, 2 usage, 3 refused, 4 state conflict, 5 I/O.
+The direct `infra/apply.mjs` commands below are NOT equivalent to the wrapper: they do not include the `--approve-region`, `--approve-plan` and `--approve-public-api` gates, and
+the `iam` stage can be applied through that path with `--approve-project` alone (no public-API consent). Use `scripts/deploy.mjs` for every real apply.
 
 ## B. IAM (created by `bootstrap` and `access`; summary of ARCHITECTURE §14)
 

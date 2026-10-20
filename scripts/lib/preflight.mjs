@@ -60,8 +60,9 @@ export function runPreflight(ctx) {
   }
   if (image(dockerfiles.api) !== image(dockerfiles.worker)) problems.push('api and worker use different base images');
   const ignore = exists('.dockerignore') ? read('.dockerignore') : '';
-  for (const needle of ['**/.env', '**/node_modules', '.git']) if (!ignore.split('\n').includes(needle)) problems.push(`.dockerignore lacks ${needle}`);
-  for (const required of ['pnpm-lock.yaml', 'package.json']) if (ignore.split('\n').includes(required)) problems.push(`.dockerignore excludes ${required}`);
+  const ignoreLines = ignore.split(/\r?\n/).map((line) => line.trim());
+  for (const needle of ['**/.env', '**/.npmrc', '**/node_modules', '.git']) if (!ignoreLines.includes(needle)) problems.push(`.dockerignore lacks ${needle}`);
+  for (const required of ['pnpm-lock.yaml', 'package.json']) if (ignoreLines.includes(required)) problems.push(`.dockerignore excludes ${required}`);
   add('dockerfiles', problems.length ? 'FAIL' : 'PASS', problems.length ? problems.join('; ') : 'pinned Node 24 base, non-root, exec-form CMD, frozen lockfile, /health, no secrets');
 
   // 4. CI image job never pushes

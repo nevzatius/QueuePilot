@@ -19,6 +19,7 @@
 **/application_default_credentials.json
 **/*.env
 **/.envrc
+**/.npmrc
 **/*.pem
 **/*.key
 **/*.p12
