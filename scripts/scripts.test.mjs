@@ -1,19 +1,23 @@
+/* global structuredClone */
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { CloudError } from '../infra/cloud.mjs';
-import { EXIT, FirestoreRest, ScriptError, resolveTarget, runCli, verifyCloudProject } from './lib/ops.mjs';
+import { EXIT, FirestoreRest, IdentityRest, ScriptError, maskEmail, resolveTarget, runCli, verifyCloudProject } from './lib/ops.mjs';
 import { planDigest } from './lib/cloud-ops.mjs';
 import { runPreflight, summarize } from './lib/preflight.mjs';
-import { decideGrant, grantRole, parseGrantArgs } from './grant-role.mjs';
-import { parseSeedArgs, sandboxTenant, seedDemo } from './seed-demo.mjs';
+import { checkAccount, decideGrant, grantRole, parseGrantArgs } from './grant-role.mjs';
+import { driftFields, parseSeedArgs, sandboxTenant, seedDemo } from './seed-demo.mjs';
 import { parseDeployArgs, runDeploy } from './deploy.mjs';
-import { parseShutdownArgs, runShutdown, shutdownTargets } from './shutdown.mjs';
+import { parseShutdownArgs, runShutdown, shutdownTargets, withoutPublicInvoker } from './shutdown.mjs';
+import { cloudSummary, dockerImagePath, runCloudPreflight } from './lib/cloud-preflight.mjs';
+import { cloudPreflightMain, readOnly } from './preflight.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const EMU = { FIRESTORE_EMULATOR_HOST: '127.0.0.1:8080' };
+const EMU = { FIRESTORE_EMULATOR_HOST: '127.0.0.1:8080', FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:9099' };
+const FS_ONLY = { FIRESTORE_EMULATOR_HOST: '127.0.0.1:8080' };
 const io = () => { const lines = []; return { lines, out: (m) => lines.push(m), err: (m) => lines.push(m) }; };
 const refuses = (fn, exitCode) => assert.throws(fn, (error) => error instanceof ScriptError && error.exitCode === exitCode, `expected exit ${exitCode}`);
 const rejects = (fn, exitCode) => assert.rejects(async () => fn(), (error) => error instanceof ScriptError && error.exitCode === exitCode, `expected exit ${exitCode}`);
@@ -33,10 +37,19 @@ class FakeStore {
   }
 }
 const noCloud = () => { throw new Error('cloud/credentials must not be touched'); };
-const deps = (store, extra = {}) => ({ io: io(), now: () => 1_700_000_000_000, cloudClient: noCloud, firestore: () => store, ...extra });
+const googleUser = { localId: 'user-1', email: 'owner@example.test', emailVerified: true, disabled: false, providerUserInfo: [{ providerId: 'google.com' }] };
+/** Auth double: answers lookups by uid or email from a fixed user list and records each query. */
+const fakeIdentity = (users = [googleUser]) => {
+  const queries = [];
+  return { queries, lookup: async (q) => { queries.push(q); return users.filter((u) => (q.uid !== undefined ? u.localId === q.uid : u.email === q.email)); } };
+};
+const deps = (store, extra = {}) => {
+  const identity = extra.identityDouble ?? fakeIdentity();
+  return { io: io(), now: () => 1_700_000_000_000, cloudClient: noCloud, firestore: () => store, identity: () => identity, identityDouble: identity, ...extra };
+};
 const active = { name: 'T', status: 'active', openSignup: true, quotaMode: 'enforced', schemaVersion: 1 };
 const argsFor = (list) => parseGrantArgs(list, EMU);
-const apply = ['--project', 'demo-queuepilot', '--tenant', 'sandbox', '--uid', 'user-1', '--apply', '--approve-project', 'demo-queuepilot'];
+const apply = ['--project', 'demo-queuepilot', '--tenant', 'sandbox', '--uid', 'user-1', '--apply', '--approve-project', 'demo-queuepilot', '--approve-uid', 'user-1'];
 
 test('resolveTarget: project, approval and environment guards', () => {
   refuses(() => resolveTarget({ env: {} }), EXIT.USAGE);
@@ -50,6 +63,12 @@ test('resolveTarget: project, approval and environment guards', () => {
   refuses(() => resolveTarget({ project: 'demo-queuepilot', env: { FIRESTORE_EMULATOR_HOST: 'firestore.example.com:8080' } }), EXIT.REFUSED);
   assert.equal(resolveTarget({ project: 'qp-demo-12345', approveProject: 'qp-demo-12345', apply: true, env: {} }).mode, 'cloud');
   assert.equal(resolveTarget({ project: 'demo-queuepilot', env: EMU }).mode, 'emulator');
+  // Half-emulated targets are refused: an Auth emulator variable never combines with a real project or real Firestore.
+  refuses(() => resolveTarget({ project: 'qp-demo-12345', env: { FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:9099' } }), EXIT.REFUSED);
+  refuses(() => resolveTarget({ project: 'demo-queuepilot', env: { FIREBASE_AUTH_EMULATOR_HOST: '127.0.0.1:9099' } }), EXIT.REFUSED);
+  refuses(() => resolveTarget({ project: 'demo-queuepilot', env: { ...FS_ONLY, FIREBASE_AUTH_EMULATOR_HOST: 'auth.example.com:9099' } }), EXIT.REFUSED);
+  refuses(() => resolveTarget({ project: 'demo-queuepilot', env: FS_ONLY, requireAuthEmulator: true }), EXIT.REFUSED);
+  assert.equal(resolveTarget({ project: 'demo-queuepilot', env: FS_ONLY }).mode, 'emulator'); // seed needs Firestore only
 });
 
 test('grant-role: argument validation', () => {
@@ -66,14 +85,53 @@ test('grant-role: argument validation', () => {
   refuses(() => argsFor([...base, '--uid', 'user-2']), EXIT.USAGE); // repeated value
   refuses(() => argsFor([...base, '--apply']), EXIT.REFUSED); // no approval
   refuses(() => argsFor([...base, '--apply', '--approve-project', 'demo-other']), EXIT.REFUSED); // wrong project
+  refuses(() => argsFor([...base, '--apply', '--approve-project', 'demo-queuepilot']), EXIT.REFUSED); // no --approve-uid
+  refuses(() => argsFor([...base, '--approve-uid', 'a/b']), EXIT.USAGE);
+  refuses(() => argsFor(['--project', 'demo-queuepilot', '--tenant', 'sandbox', '--email', 'not-an-email']), EXIT.USAGE);
+  refuses(() => parseGrantArgs(base, FS_ONLY), EXIT.REFUSED); // the Auth emulator is required in emulator mode
+  assert.equal(argsFor(['--project', 'demo-queuepilot', '--tenant', 'sandbox', '--email', 'owner@example.test']).email, 'owner@example.test');
 });
 
-test('grant-role: dry run never reads or writes and never asks for credentials', async () => {
-  const store = new FakeStore();
-  const d = deps(store, { firestore: noCloud });
+test('grant-role: dry run is read-only, prints the resolved uid and the exact approval, never writes', async () => {
+  const store = new FakeStore({ 'tenants/sandbox': active });
+  const d = deps(store);
   assert.equal(await grantRole(argsFor(apply.slice(0, 6)), d), EXIT.OK);
-  assert.deepEqual(store.reads, []); assert.deepEqual(store.writes, []);
-  assert.match(d.io.lines.join('\n'), /DRY RUN.*project=demo-queuepilot.*tenant=sandbox.*uid=user-1/);
+  assert.deepEqual(store.writes, []);
+  assert.deepEqual(store.reads, ['tenants/sandbox', 'memberships/user-1']);
+  const text = d.io.lines.join('\n');
+  assert.match(text, /DRY RUN \(read-only\).*project=demo-queuepilot.*tenant=sandbox.*uid=user-1/);
+  assert.match(text, /Resolved user: uid=user-1 email=o\*\*\*@example\.test/);
+  assert.match(text, /--apply --approve-project=demo-queuepilot --approve-uid=user-1/);
+  assert.ok(!text.includes('owner@example.test'), 'the full email is never printed');
+});
+
+test('grant-role: --email resolves the uid; apply needs the matching --approve-uid', async () => {
+  const byEmail = ['--project', 'demo-queuepilot', '--tenant', 'sandbox', '--email', 'owner@example.test'];
+  const dry = deps(new FakeStore({ 'tenants/sandbox': active }));
+  assert.equal(await grantRole(argsFor(byEmail), dry), EXIT.OK);
+  assert.deepEqual(dry.identityDouble.queries, [{ email: 'owner@example.test' }]);
+  const wrong = new FakeStore({ 'tenants/sandbox': active });
+  await rejects(() => grantRole(argsFor([...byEmail, '--apply', '--approve-project', 'demo-queuepilot', '--approve-uid', 'someone-else']), deps(wrong)), EXIT.REFUSED);
+  assert.deepEqual(wrong.writes, []);
+  const right = new FakeStore({ 'tenants/sandbox': active });
+  assert.equal(await grantRole(argsFor([...byEmail, '--apply', '--approve-project', 'demo-queuepilot', '--approve-uid', 'user-1']), deps(right)), EXIT.OK);
+  assert.deepEqual(right.writes.map((w) => w[1]), ['memberships/user-1']);
+  assert.equal(maskEmail('a@b.c'), 'a***@b.c'); assert.equal(maskEmail(undefined), '(none)');
+});
+
+test('grant-role: account checks (missing, ambiguous, disabled, unverified, non-Google, uid/email mismatch) stop before Firestore', async () => {
+  const cases = [
+    [], [googleUser, { ...googleUser, localId: 'user-2' }], [{ ...googleUser, disabled: true }], [{ ...googleUser, emailVerified: false }],
+    [{ ...googleUser, providerUserInfo: [{ providerId: 'password' }] }], [{ ...googleUser, providerUserInfo: undefined }],
+  ];
+  for (const users of cases) {
+    const store = new FakeStore({ 'tenants/sandbox': active });
+    await rejects(() => grantRole(argsFor(apply), deps(store, { identityDouble: { lookup: async () => users } })), EXIT.STATE);
+    assert.deepEqual([store.reads, store.writes], [[], []]);
+  }
+  assert.match(checkAccount([googleUser], { uid: 'user-1', email: 'other@example.test' }), /different users/);
+  assert.match(checkAccount([googleUser], { uid: 'user-9' }), /different users/);
+  assert.equal(checkAccount([googleUser], { uid: 'user-1', email: 'OWNER@example.test' }), null);
 });
 
 test('grant-role: apply creates an operator-created admin in exactly one tenant', async () => {
@@ -111,11 +169,13 @@ test('grant-role: promotes an active member with the read precondition and only 
 
 test('cloud mode: a project without the demo label or with another identity is refused before any Firestore access', async () => {
   const ok = { projectId: 'qp-demo-12345', lifecycleState: 'ACTIVE', labels: { 'queuepilot-environment': 'demo' } };
-  const cloudArgs = ['--project', 'qp-demo-12345', '--tenant', 'sandbox', '--uid', 'user-1', '--apply', '--approve-project', 'qp-demo-12345'];
+  const cloudArgs = ['--project', 'qp-demo-12345', '--tenant', 'sandbox', '--uid', 'user-1', '--apply', '--approve-project', 'qp-demo-12345', '--approve-uid', 'user-1'];
   for (const info of [{ ...ok, labels: {} }, { ...ok, lifecycleState: 'DELETE_REQUESTED' }, { ...ok, projectId: 'someone-else-1' }]) {
     const store = new FakeStore({ 'tenants/sandbox': active });
-    await rejects(() => grantRole(parseGrantArgs(cloudArgs, {}), deps(store, { cloudClient: () => async () => info })), EXIT.REFUSED);
+    const d = deps(store, { cloudClient: () => async () => info });
+    await rejects(() => grantRole(parseGrantArgs(cloudArgs, {}), d), EXIT.REFUSED);
     assert.deepEqual(store.reads, []); assert.deepEqual(store.writes, []);
+    assert.deepEqual(d.identityDouble.queries, [], 'no Auth lookup before the project is verified');
   }
   const mismatch = new FakeStore({ 'tenants/sandbox': active });
   await rejects(() => grantRole(parseGrantArgs([...cloudArgs, '--project-number', '999999999999'], {}), deps(mismatch, { cloudClient: () => async () => ({ ...ok, projectNumber: '123456789012' }) })), EXIT.REFUSED);
@@ -146,6 +206,25 @@ test('FirestoreRest: create-only, precondition update, and errors never echo res
   assert.equal(await client(404).get('memberships/u1'), null);
 });
 
+test('IdentityRest: read-only lookup, emulator vs cloud headers, errors never echo bodies', async () => {
+  const calls = [];
+  const respond = (status, body) => async (url, init) => { calls.push({ url, init }); return { status, json: async () => body }; };
+  const emulator = { mode: 'emulator', project: 'demo-queuepilot', emulatorHost: '127.0.0.1:8080', authEmulatorHost: '127.0.0.1:9099' };
+  const users = await new IdentityRest({ target: emulator, token: noCloud, fetchImpl: respond(200, { users: [googleUser] }) }).lookup({ uid: 'user-1' });
+  assert.deepEqual(users, [googleUser]);
+  assert.equal(calls[0].url, 'http://127.0.0.1:9099/identitytoolkit.googleapis.com/v1/projects/demo-queuepilot/accounts:lookup');
+  assert.equal(calls[0].init.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[0].init.body), { localId: ['user-1'] });
+  assert.equal(calls[0].init.headers.authorization, 'Bearer owner');
+  const cloud = { mode: 'cloud', project: 'qp-demo-12345' };
+  assert.deepEqual(await new IdentityRest({ target: cloud, token: async () => 'tkn', fetchImpl: respond(200, {}) }).lookup({ email: 'a@b.cd' }), []);
+  assert.equal(calls[1].url, 'https://identitytoolkit.googleapis.com/v1/projects/qp-demo-12345/accounts:lookup');
+  assert.equal(calls[1].init.headers['x-goog-user-project'], 'qp-demo-12345');
+  assert.deepEqual(JSON.parse(calls[1].init.body), { email: ['a@b.cd'] });
+  await assert.rejects(new IdentityRest({ target: cloud, token: async () => 'tkn', fetchImpl: respond(403, { error: { status: 'PERMISSION_DENIED', message: 'secret-xyz' } }) }).lookup({ uid: 'u' }),
+    (error) => error.exitCode === EXIT.IO && /PERMISSION_DENIED/.test(error.message) && !/secret-xyz|tkn/.test(error.message));
+});
+
 test('runCli maps errors to exit codes without leaking unexpected details', async () => {
   const out = io();
   assert.equal(await runCli(async () => { throw new ScriptError(EXIT.REFUSED, 'nope'); }, [], out), EXIT.REFUSED);
@@ -153,34 +232,33 @@ test('runCli maps errors to exit codes without leaking unexpected details', asyn
   assert.ok(!out.lines.join('\n').includes('abc123'));
 });
 
-test('seed-demo: explicit signup choice, dry run, idempotency, drift and member-only memberships', async () => {
-  const seed = (list) => parseSeedArgs(list, EMU);
+test('seed-demo: explicit signup choice, dry run, idempotency, DRIFT without overwrite, never memberships', async () => {
+  const seed = (list) => parseSeedArgs(list, FS_ONLY);
   const base = ['--project', 'demo-queuepilot', '--open-signup', 'false'];
   refuses(() => seed(['--project', 'demo-queuepilot']), EXIT.USAGE); // signup must be a conscious choice
   refuses(() => seed([...base.slice(0, 2), '--open-signup', 'maybe']), EXIT.USAGE);
   refuses(() => seed([...base, '--apply']), EXIT.REFUSED);
   refuses(() => seed([...base, '--apply', '--approve-project', 'demo-other']), EXIT.REFUSED); // wrong project
-  refuses(() => seed([...base, '--member-uid', 'a b']), EXIT.USAGE);
+  refuses(() => seed([...base, '--member-uid', 'user-1']), EXIT.USAGE); // memberships are not the seed's job
 
   const dry = new FakeStore();
   assert.equal(await seedDemo(seed(base), deps(dry, { firestore: noCloud })), EXIT.OK);
   assert.deepEqual([dry.reads, dry.writes], [[], []]);
 
   const store = new FakeStore();
-  const applyArgs = [...base, '--apply', '--approve-project', 'demo-queuepilot', '--member-uid', 'user-1'];
-  await seedDemo(seed(applyArgs), deps(store));
-  assert.deepEqual(store.writes.map((w) => w[1]), ['tenants/sandbox', 'memberships/user-1']);
+  const applyArgs = [...base, '--apply', '--approve-project', 'demo-queuepilot'];
+  assert.equal(await seedDemo(seed(applyArgs), deps(store)), EXIT.OK);
+  assert.deepEqual(store.writes.map((w) => w[1]), ['tenants/sandbox']);
   assert.deepEqual(store.writes[0][2], sandboxTenant(false));
-  assert.equal(store.writes[1][2].role, 'member');
-  assert.ok(!store.writes.some((w) => w[2].role === 'admin'));
-  await seedDemo(seed(applyArgs), deps(store)); // rerun: no further writes
-  assert.equal(store.writes.length, 2);
+  assert.equal(await seedDemo(seed(applyArgs), deps(store)), EXIT.OK); // rerun: no further writes
+  assert.equal(store.writes.length, 1);
 
-  store.docs.get('tenants/sandbox').data = { ...sandboxTenant(true) }; // drift is reported, not overwritten
-  await rejects(() => seedDemo(seed(applyArgs), deps(store)), EXIT.STATE);
-  const other = new FakeStore({ 'tenants/sandbox': sandboxTenant(false), 'memberships/user-1': { tenantId: 'other', role: 'admin', status: 'active', createdBy: 'operator', schemaVersion: 1 } });
-  await rejects(() => seedDemo(seed(applyArgs), deps(other)), EXIT.STATE);
-  assert.deepEqual(other.writes, []);
+  store.docs.get('tenants/sandbox').data = { ...sandboxTenant(true), extra: 'x' }; // drift is reported, not overwritten
+  const drifted = deps(store);
+  assert.equal(await seedDemo(seed(applyArgs), drifted), EXIT.STATE);
+  assert.match(drifted.io.lines.join('\n'), /DRIFT tenants\/sandbox: fields differ from the seed: extra, openSignup\. Not overwriting/);
+  assert.equal(store.writes.length, 1);
+  assert.deepEqual(driftFields({ a: { b: 1 } }, { a: { b: 1 } }), []);
 });
 
 // ---- deploy / shutdown wrappers ----
@@ -324,6 +402,148 @@ test('shutdown: absent resources are skipped, wrong project identity or label st
   assert.equal(denied.state.queue, 'PAUSED', 'queue is still paused after the scheduler failure');
   assert.ok(partial.io.lines.some((l) => /qp-reconcile: NOT confirmed paused: HTTP 403 PERMISSION_DENIED/.test(l)));
   assert.deepEqual(shutdownTargets(cfg).map((t) => t.id), ['qp-reconcile', 'qp-process']);
+});
+
+/** Cloud double for the optional public-API revocation: queue/job already paused, qp-api policy held in memory. */
+function revokeCloud({ policy, absent = false, stuck = false } = {}) {
+  const calls = [];
+  const state = { policy: structuredClone(policy) };
+  const runPath = `v2/projects/${cfg.projectId}/locations/${cfg.region}/services/qp-api`;
+  const client = async (host, path, method = 'GET', body) => {
+    calls.push(`${method} ${host} ${path}`);
+    if (host === 'cloudresourcemanager') return { projectId: cfg.projectId, projectNumber: cfg.projectNumber, lifecycleState: 'ACTIVE', labels: { 'queuepilot-environment': 'demo' } };
+    if (host !== 'run') return { state: 'PAUSED' };
+    assert.ok(path.startsWith(runPath), `only qp-api is touched: ${path}`);
+    if (absent) throw new CloudError(404, 'NOT_FOUND');
+    if (method === 'GET') { assert.match(path, /:getIamPolicy\?options\.requestedPolicyVersion=3$/); return structuredClone(state.policy); }
+    assert.ok(path.endsWith(':setIamPolicy'));
+    assert.equal(body.policy.etag, state.policy.etag, 'the read etag is sent back');
+    if (!stuck) state.policy = { ...body.policy, etag: 'next' };
+    return state.policy;
+  };
+  return { calls, state, client };
+}
+
+test('shutdown --revoke-public-api: removes only allUsers from unconditional run.invoker on qp-api and confirms by re-read', async () => {
+  const policy = { etag: 'e1', version: 3, bindings: [
+    { role: 'roles/run.invoker', members: ['allUsers', 'serviceAccount:keep@x.iam.gserviceaccount.com'] },
+    { role: 'roles/run.invoker', members: ['allUsers'], condition: { title: 'c', expression: 'true' } },
+    { role: 'roles/run.viewer', members: ['allUsers'] },
+  ] };
+  const without = withoutPublicInvoker(policy);
+  assert.deepEqual(without.bindings[0].members, ['serviceAccount:keep@x.iam.gserviceaccount.com']);
+  assert.deepEqual(without.bindings.slice(1), policy.bindings.slice(1), 'conditional and other-role bindings are untouched');
+  assert.equal(without.etag, 'e1');
+  assert.deepEqual(withoutPublicInvoker({ etag: 'e', bindings: [{ role: 'roles/run.invoker', members: ['allUsers'] }] }).bindings, []);
+
+  const dryCloud = revokeCloud({ policy });
+  const dry = { io: io(), readFile: () => cfgText, client: noCloud };
+  assert.equal(await runShutdown(shut(['--revoke-public-api']), dry), EXIT.OK);
+  assert.match(dry.io.lines.join('\n'), /remove the allUsers roles\/run.invoker binding from qp-api/);
+  assert.deepEqual(dryCloud.calls, []);
+
+  const cloud = revokeCloud({ policy: { etag: 'e1', bindings: [{ role: 'roles/run.invoker', members: ['allUsers'] }] } });
+  const d = { io: io(), readFile: () => cfgText, client: () => cloud.client };
+  assert.equal(await runShutdown(shut([...shutApply, '--revoke-public-api']), d), EXIT.OK);
+  assert.deepEqual(cloud.state.policy.bindings, []);
+  assert.equal(cloud.calls.filter((c) => c.includes(':setIamPolicy')).length, 1);
+  assert.match(d.io.lines.join('\n'), /allUsers invoker removed \(confirmed by re-read\)/);
+
+  const plain = revokeCloud({ policy: { etag: 'e1', bindings: [{ role: 'roles/run.invoker', members: ['allUsers'] }] } });
+  await runShutdown(shut(shutApply), { io: io(), readFile: () => cfgText, client: () => plain.client });
+  assert.ok(!plain.calls.some((c) => c.includes(' run ')), 'without the flag qp-api IAM is never read or changed');
+
+  const priv = revokeCloud({ policy: { etag: 'e1', bindings: [] } });
+  assert.equal(await runShutdown(shut([...shutApply, '--revoke-public-api']), { io: io(), readFile: () => cfgText, client: () => priv.client }), EXIT.OK);
+  assert.ok(!priv.calls.some((c) => c.includes(':setIamPolicy')));
+  const absent = revokeCloud({ absent: true });
+  assert.equal(await runShutdown(shut([...shutApply, '--revoke-public-api']), { io: io(), readFile: () => cfgText, client: () => absent.client }), EXIT.OK);
+  const stuck = revokeCloud({ stuck: true, policy: { etag: 'e1', bindings: [{ role: 'roles/run.invoker', members: ['allUsers'] }] } });
+  const failing = { io: io(), readFile: () => cfgText, client: () => stuck.client };
+  assert.equal(await runShutdown(shut([...shutApply, '--revoke-public-api']), failing), EXIT.IO);
+  assert.match(failing.io.lines.join('\n'), /public access NOT confirmed revoked/);
+});
+
+// ---- cloud preflight (read-only) ----
+const loc = `projects/${cfg.projectId}/locations/${cfg.region}`;
+/** Healthy, fully provisioned demo project as GET answers keyed by host and path. */
+function preflightCloud(overrides = {}) {
+  const calls = [];
+  const answers = {
+    [`cloudresourcemanager v1/projects/${cfg.projectId}`]: { projectId: cfg.projectId, projectNumber: cfg.projectNumber, lifecycleState: 'ACTIVE', labels: { 'queuepilot-environment': 'demo' } },
+    [`cloudbilling v1/projects/${cfg.projectId}/billingInfo`]: { billingEnabled: true },
+    [`firestore v1/projects/${cfg.projectId}/databases/(default)`]: { locationId: 'europe-west1', type: 'FIRESTORE_NATIVE', deleteProtectionState: 'DELETE_PROTECTION_ENABLED' },
+    [`secretmanager v1/projects/${cfg.projectId}/secrets/redis-url/versions/1`]: { state: 'ENABLED' },
+    [`cloudtasks v2/${loc}/queues/qp-process`]: { state: 'PAUSED' },
+    [`cloudscheduler v1/${loc}/jobs/qp-reconcile`]: { state: 'PAUSED' },
+    [`run v2/${loc}/services/qp-worker`]: { template: { containers: [{ image: cfg.workerImage }] } },
+    [`run v2/${loc}/services/qp-api`]: { template: { containers: [{ image: cfg.apiImage }] } },
+    [`run v2/${loc}/services/qp-worker:getIamPolicy?options.requestedPolicyVersion=3`]: { bindings: [{ role: 'roles/run.invoker', members: ['serviceAccount:qp-tasks-invoker-sa@x'] }] },
+    [`run v2/${loc}/services/qp-api:getIamPolicy?options.requestedPolicyVersion=3`]: { bindings: [{ role: 'roles/run.invoker', members: ['allUsers'] }] },
+    ...overrides,
+  };
+  const client = async (host, path, method = 'GET', body) => {
+    calls.push({ host, path, method, body });
+    const key = `${host} ${path}`;
+    if (host === 'serviceusage' && !(key in answers)) return { state: 'ENABLED' };
+    if (host === 'artifactregistry' && !(key in answers)) return { name: path };
+    const value = answers[key];
+    if (value instanceof Error) throw value;
+    if (value === undefined || value === null) throw new CloudError(404, 'NOT_FOUND');
+    return value;
+  };
+  return { calls, client };
+}
+const byId = (results) => Object.fromEntries(results.map((r) => [r.id, r.status]));
+
+test('cloud preflight: a matching project passes and every request is a body-less GET', async () => {
+  const cloud = preflightCloud();
+  const results = await runCloudPreflight(cfg, readOnly(cloud.client));
+  assert.deepEqual(results.filter((r) => r.status !== 'PASS'), []);
+  assert.equal(cloudSummary(results).exitCode, 0);
+  assert.ok(cloud.calls.every((c) => c.method === 'GET' && c.body === undefined));
+  assert.ok(cloud.calls.some((c) => c.host === 'artifactregistry' && c.path.endsWith(`/repositories/queuepilot/dockerImages/api%40sha256%3A${digest64}`)));
+  assert.equal(dockerImagePath(cfg, 'europe-west1-docker.pkg.dev/other-project/queuepilot/api@sha256:' + digest64), null);
+  await assert.rejects(readOnly(cloud.client)('run', 'x:setIamPolicy', 'POST', {}), (error) => error.exitCode === EXIT.IO);
+  assert.equal(cloud.calls.at(-1).method, 'GET', 'the refused write never reached the client');
+});
+
+test('cloud preflight: identity doubt stops all reads; contradictions FAIL; denials stay UNKNOWN; missing is ABSENT', async () => {
+  for (const crm of [{ projectId: cfg.projectId, projectNumber: '999999999999', lifecycleState: 'ACTIVE', labels: { 'queuepilot-environment': 'demo' } },
+    { projectId: cfg.projectId, projectNumber: cfg.projectNumber, lifecycleState: 'ACTIVE', labels: {} }, new CloudError(403, 'PERMISSION_DENIED')]) {
+    const cloud = preflightCloud({ [`cloudresourcemanager v1/projects/${cfg.projectId}`]: crm });
+    const results = await runCloudPreflight(cfg, readOnly(cloud.client));
+    assert.equal(results.length, 1);
+    assert.equal(cloud.calls.length, 1, 'nothing else is read after an identity problem');
+    assert.notEqual(cloudSummary(results).exitCode, 0);
+  }
+  const bad = preflightCloud({
+    [`cloudbilling v1/projects/${cfg.projectId}/billingInfo`]: new CloudError(403, 'PERMISSION_DENIED'),
+    [`firestore v1/projects/${cfg.projectId}/databases/(default)`]: { locationId: 'eur3', type: 'FIRESTORE_NATIVE' },
+    [`cloudtasks v2/${loc}/queues/qp-process`]: { state: 'RUNNING' },
+    [`cloudscheduler v1/${loc}/jobs/qp-reconcile`]: null,
+    [`run v2/${loc}/services/qp-worker:getIamPolicy?options.requestedPolicyVersion=3`]: { bindings: [{ role: 'roles/run.invoker', members: ['allAuthenticatedUsers'] }] },
+    [`run v2/${loc}/services/qp-api`]: { template: { containers: [{ image: 'europe-west1-docker.pkg.dev/qp-demo-12345/queuepilot/api@sha256:' + 'b'.repeat(64) }] } },
+  });
+  const status = byId(await runCloudPreflight(cfg, readOnly(bad.client)));
+  assert.deepEqual([status.billing, status.firestore, status['qp-process'], status['qp-reconcile'], status['run-iam:qp-worker'], status['run:qp-api']],
+    ['UNKNOWN', 'FAIL', 'FAIL', 'ABSENT', 'FAIL', 'FAIL']);
+  const unknownOnly = byId(await runCloudPreflight(cfg, readOnly(preflightCloud({ [`cloudbilling v1/projects/${cfg.projectId}/billingInfo`]: new CloudError(403, 'PERMISSION_DENIED') }).client)));
+  assert.equal(unknownOnly.billing, 'UNKNOWN');
+  assert.equal(cloudSummary([{ status: 'UNKNOWN' }]).exitCode, 3);
+  assert.equal(cloudSummary([{ status: 'ABSENT' }]).exitCode, 0);
+});
+
+test('cloud preflight CLI: needs config, exact project approval and the approved region before any request', async () => {
+  const cloud = preflightCloud();
+  const run = (values) => cloudPreflightMain({ config: 'c.json', project: cfg.projectId, region: 'europe-west1', ...values }, io(), { readFile: () => cfgText, client: () => cloud.client });
+  await rejects(() => run({ 'approve-project': undefined }), EXIT.REFUSED);
+  await rejects(() => run({ 'approve-project': 'other-project-1' }), EXIT.REFUSED);
+  await rejects(() => run({ 'approve-project': cfg.projectId, region: 'asia-east1' }), EXIT.REFUSED);
+  await rejects(() => run({ config: undefined, 'approve-project': cfg.projectId }), EXIT.USAGE);
+  assert.deepEqual(cloud.calls, []);
+  assert.equal(await run({ 'approve-project': cfg.projectId }), 0);
+  assert.ok(cloud.calls.length > 10 && cloud.calls.every((c) => c.method === 'GET'));
 });
 
 // ---- preflight ----

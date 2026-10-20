@@ -39,19 +39,25 @@ export const UID = /^[A-Za-z0-9_-]{1,128}$/; // Firebase uid charset; rejects se
  * - Cloud mode rejects demo-*, placeholder and production-looking projects and, for writes, needs
  *   --approve-project to repeat the project ID exactly.
  */
-export function resolveTarget({ project, approveProject, apply, env }) {
+export function resolveTarget({ project, approveProject, apply, env, requireAuthEmulator = false }) {
   if (!project) throw new ScriptError(EXIT.USAGE, 'Missing --project');
   if (!PROJECT_ID.test(project)) throw new ScriptError(EXIT.USAGE, 'Invalid --project value');
   if (approveProject !== undefined && approveProject !== project) {
     throw new ScriptError(EXIT.REFUSED, '--approve-project does not match --project; refusing');
   }
-  const emulatorHost = env.FIRESTORE_EMULATOR_HOST;
-  if (emulatorHost !== undefined && emulatorHost !== '') {
-    if (!EMULATOR_HOST.test(emulatorHost) || !project.startsWith('demo-')) {
-      throw new ScriptError(EXIT.REFUSED, 'FIRESTORE_EMULATOR_HOST requires a loopback address and a demo-* project; refusing');
+  const emulatorHost = env.FIRESTORE_EMULATOR_HOST || undefined;
+  const authEmulatorHost = env.FIREBASE_AUTH_EMULATOR_HOST || undefined;
+  // Either emulator variable selects emulator mode; a half-emulated target (one service local, one real) is refused.
+  if (emulatorHost !== undefined || authEmulatorHost !== undefined) {
+    if (!emulatorHost || !EMULATOR_HOST.test(emulatorHost) || !project.startsWith('demo-')
+        || (authEmulatorHost !== undefined && !EMULATOR_HOST.test(authEmulatorHost))) {
+      throw new ScriptError(EXIT.REFUSED, 'Emulator variables require loopback FIRESTORE_EMULATOR_HOST (and FIREBASE_AUTH_EMULATOR_HOST if set) and a demo-* project; refusing');
+    }
+    if (requireAuthEmulator && !authEmulatorHost) {
+      throw new ScriptError(EXIT.REFUSED, 'Emulator mode needs FIREBASE_AUTH_EMULATOR_HOST too: the user is resolved in the Auth emulator; refusing');
     }
     if (apply && approveProject !== project) throw new ScriptError(EXIT.REFUSED, 'Writes require --approve-project=<project>');
-    return { mode: 'emulator', project, emulatorHost };
+    return { mode: 'emulator', project, emulatorHost, ...(authEmulatorHost ? { authEmulatorHost } : {}) };
   }
   if (project.startsWith('demo-') || project.startsWith('replace-') || /(^|[-_])(prod|production)([-_]|$)/i.test(project)) {
     throw new ScriptError(EXIT.REFUSED, 'Refusing a demo-*, placeholder or production-looking project outside the emulator');
@@ -157,6 +163,45 @@ export class FirestoreRest {
       { method: 'POST', body: JSON.stringify({ writes: [write] }) });
     if (['FAILED_PRECONDITION', 'ABORTED'].includes(body?.error?.status)) throw new ScriptError(EXIT.STATE, 'Document changed concurrently; rerun to re-evaluate');
     if (status !== 200) throw this.failure(status, body);
+  }
+}
+
+export const EMAIL = /^[^\s@/]{1,64}@[A-Za-z0-9.-]{1,189}\.[A-Za-z]{2,24}$/;
+
+/** Emails are personal data: print only the first character of the local part and the domain. */
+export const maskEmail = (email) => {
+  const at = typeof email === 'string' ? email.lastIndexOf('@') : -1;
+  return at > 0 ? `${email[0]}***${email.slice(at)}` : '(none)';
+};
+
+/**
+ * Read-only Firebase Auth user lookup (Identity Toolkit `projects.accounts.lookup`, POST, needs
+ * `firebaseauth.users.get`). Cloud requests name the project as quota project, as user credentials
+ * from `gcloud auth print-access-token` carry none. Response bodies are never echoed in errors.
+ */
+export class IdentityRest {
+  constructor({ target, token, fetchImpl = fetch }) {
+    this.target = target;
+    this.token = token;
+    this.fetch = fetchImpl;
+    this.base = target.mode === 'emulator'
+      ? `http://${target.authEmulatorHost}/identitytoolkit.googleapis.com` : 'https://identitytoolkit.googleapis.com';
+  }
+
+  /** Returns the matching users (normally zero or one) as plain objects. */
+  async lookup({ uid, email }) {
+    const emulator = this.target.mode === 'emulator';
+    const headers = { authorization: `Bearer ${emulator ? 'owner' : await this.token()}`, 'content-type': 'application/json',
+      ...(emulator ? {} : { 'x-goog-user-project': this.target.project }) };
+    const body = uid !== undefined ? { localId: [uid] } : { email: [email] };
+    let response;
+    try {
+      response = await this.fetch(`${this.base}/v1/projects/${this.target.project}/accounts:lookup`,
+        { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) });
+    } catch { throw new ScriptError(EXIT.IO, 'Auth lookup failed: network error'); }
+    const value = await response.json().catch(() => ({}));
+    if (response.status !== 200) throw new ScriptError(EXIT.IO, `Auth lookup failed: HTTP ${response.status} ${value?.error?.status ?? 'UNKNOWN'}`);
+    return Array.isArray(value.users) ? value.users : [];
   }
 }
 

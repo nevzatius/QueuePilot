@@ -12,10 +12,12 @@ import { loadScope } from './lib/cloud-ops.mjs';
 //
 //   node scripts/shutdown.mjs --config C --project P --region europe-west1
 //   node scripts/shutdown.mjs --config C --project P --region europe-west1 --apply --approve-project P --approve-region europe-west1
+//   ... --revoke-public-api   (optional, separate: also removes the allUsers invoker binding from qp-api; the `iam` stage restores it)
 
 const OPTIONS = {
   config: { type: 'string' }, project: { type: 'string' }, region: { type: 'string' },
   apply: { type: 'boolean', default: false }, 'approve-project': { type: 'string' }, 'approve-region': { type: 'string' },
+  'revoke-public-api': { type: 'boolean', default: false },
 };
 
 export function parseShutdownArgs(argv) {
@@ -32,8 +34,33 @@ export function shutdownTargets(config) {
   return targets.sort((a, b) => (a.host === 'cloudscheduler' ? -1 : 1) - (b.host === 'cloudscheduler' ? -1 : 1)); // stop the producer first
 }
 
+const INVOKER = 'roles/run.invoker';
+const PUBLIC = 'allUsers';
+const isPublicInvoker = (policy) => (policy.bindings ?? []).some((b) => b.role === INVOKER && !b.condition && (b.members ?? []).includes(PUBLIC));
+
+/** Pure: the policy without allUsers in unconditional run.invoker bindings. Everything else, including etag, is kept. */
+export function withoutPublicInvoker(policy) {
+  const bindings = (policy.bindings ?? [])
+    .map((b) => (b.role === INVOKER && !b.condition ? { ...b, members: (b.members ?? []).filter((m) => m !== PUBLIC) } : b))
+    .filter((b) => (b.members ?? []).length > 0);
+  return { ...policy, bindings };
+}
+
+/** Removes public invocation from qp-api: GET policy, POST :setIamPolicy with the read etag, GET again to confirm. */
+async function revokePublicApi(client, config, io) {
+  const service = specification(config).find((r) => r.id === 'qp-api' && r.host === 'run');
+  const read = () => getOrAbsent(client, 'run', `${service.path}:getIamPolicy?options.requestedPolicyVersion=3`);
+  const current = await read();
+  if (!current) { io.out('qp-api: absent, no public access to revoke'); return; }
+  if (!isPublicInvoker(current)) { io.out('qp-api: no allUsers invoker binding (already private)'); return; }
+  await client('run', `${service.path}:setIamPolicy`, 'POST', { policy: withoutPublicInvoker(current) });
+  const after = await read();
+  if (!after || isPublicInvoker(after)) throw new Error('public binding still present after update');
+  io.out('qp-api: allUsers invoker removed (confirmed by re-read). Re-run the `iam` stage to expose it again.');
+}
+
 export const NOT_DONE = [
-  'Cloud Run services are NOT deleted or changed. They already scale to zero (min instances 0), but idle services, Artifact Registry images,',
+  'Cloud Run services are NOT deleted or redeployed (only --revoke-public-api changes qp-api IAM). They already scale to zero (min instances 0), but idle services, Artifact Registry images,',
   'Secret Manager, Firestore storage and operations, Hosting, logs and any Upstash database can still incur cost. Scale-to-zero is not zero cost.',
   'In-flight Cloud Tasks deliveries are not cancelled by a pause; queued tasks stay queued until the owner resumes the queue.',
   'The Firestore database and all data are kept (delete protection stays on). Deleting anything is a separate, explicit owner operation.',
@@ -48,6 +75,7 @@ export async function runShutdown(values, deps) {
   const targets = shutdownTargets(config);
   deps.io.out(`${apply ? 'APPLY' : 'DRY RUN'}: shutdown of project ${config.projectId}, region ${config.region}`);
   for (const target of targets) deps.io.out(`  - pause ${target.host === 'cloudscheduler' ? 'Scheduler job' : 'Cloud Tasks queue'} ${target.id} (${target.path})`);
+  if (values['revoke-public-api']) deps.io.out('  - remove the allUsers roles/run.invoker binding from qp-api (the API stops serving the public and Hosting)');
   for (const line of NOT_DONE) deps.io.out(`  ! ${line}`);
   if (!apply) {
     deps.io.out('Nothing was read or changed. Writes need --apply, --approve-project and --approve-region.');
@@ -69,6 +97,13 @@ export async function runShutdown(values, deps) {
     } catch (error) {
       failed = true;
       deps.io.err(`${target.id}: NOT confirmed paused: ${error instanceof CloudError ? `HTTP ${error.status} ${error.code}` : String(error.message).slice(0, 200)}. Pause it manually.`);
+    }
+  }
+  if (values['revoke-public-api']) {
+    try { await revokePublicApi(client, config, deps.io); }
+    catch (error) {
+      failed = true;
+      deps.io.err(`qp-api: public access NOT confirmed revoked: ${error instanceof CloudError ? `HTTP ${error.status} ${error.code}` : String(error.message).slice(0, 200)}. Remove the binding manually.`);
     }
   }
   return failed ? EXIT.IO : EXIT.OK;
