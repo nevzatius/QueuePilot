@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-/* global fetch, AbortSignal */
+/* global fetch, AbortSignal, AbortController */
 import { fork, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { readdirSync } from 'node:fs';
@@ -193,22 +193,38 @@ test('isolated probe resources and task payloads never target the main queue', a
   await assert.rejects(() => probe({ config: 'infra/config.example.json', queue: 'qp-process', identity: 'qp-spike-reader', action: 'create', case: 'success' }));
 });
 
+// Waits for the child's ready message, but fails fast with its stderr if it exits first.
+// The 30 s bound only guards a genuine hang; process start-up under CPU load takes seconds.
+async function waitReady(child, stderr, timeoutMs = 30000) {
+  const abort = new AbortController();
+  const exited = once(child, 'exit', { signal: abort.signal }).then(([code, signal]) => {
+    throw new Error(`Probe server exited before ready (code=${code}, signal=${signal}): ${stderr()}`);
+  });
+  const ready = once(child, 'message', { signal: AbortSignal.any([abort.signal, AbortSignal.timeout(timeoutMs)]) })
+    .then(([message]) => message, (error) => {
+      throw error.name === 'TimeoutError' ? new Error(`Probe server not ready within ${timeoutMs} ms: ${stderr()}`) : error;
+    });
+  try { return await Promise.race([ready, exited]); } finally { abort.abort(); exited.catch(() => {}); }
+}
+
 test('public Hosting probe exposes only the synthetic header boolean', async (t) => {
   const child = fork('scripts/spike/server.mjs', { silent: true, execArgv: [],
     env: { ...process.env, QP_ENV: 'spike', K_SERVICE: 'qp-spike-hosting', PORT: '0' } });
   t.after(async () => { const closed = once(child, 'exit'); child.kill(); await closed; });
   let stdout = '';
+  let stderr = '';
   child.stdout.on('data', (data) => { stdout += data; });
-  const [ready] = await once(child, 'message', { signal: AbortSignal.timeout(5000) });
+  child.stderr.on('data', (data) => { stderr += data; });
+  const ready = await waitReady(child, () => stderr);
   const url = `http://127.0.0.1:${ready.port}`;
   const withHeader = await fetch(`${url}/api/auth-header`, {
-    headers: { authorization: 'Bearer qp-spike-synthetic', cookie: 'do-not-log', description: 'do-not-log' }, signal: AbortSignal.timeout(2000),
+    headers: { authorization: 'Bearer qp-spike-synthetic', cookie: 'do-not-log', description: 'do-not-log' }, signal: AbortSignal.timeout(10000),
   });
   assert.deepEqual(await withHeader.json(), { authorizationForwarded: true });
-  const withoutHeader = await fetch(`${url}/api/auth-header`, { signal: AbortSignal.timeout(2000) });
+  const withoutHeader = await fetch(`${url}/api/auth-header`, { signal: AbortSignal.timeout(10000) });
   assert.deepEqual(await withoutHeader.json(), { authorizationForwarded: false });
   for (const path of ['/redis', '/probe/success/spike-public']) {
-    const response = await fetch(`${url}${path}`, { method: 'POST', signal: AbortSignal.timeout(2000) });
+    const response = await fetch(`${url}${path}`, { method: 'POST', signal: AbortSignal.timeout(10000) });
     assert.equal(response.status, 404);
     await response.text();
   }
@@ -218,7 +234,7 @@ test('public Hosting probe exposes only the synthetic header boolean', async (t)
 test('probe handler refuses production and fault-injection environments', () => {
   for (const env of [{ QP_ENV: 'production', K_SERVICE: 'qp-worker' },
     { QP_ENV: 'spike', K_SERVICE: 'qp-spike-worker', QP_FAULT_CRASH: '1' }]) {
-    const result = spawnSync(process.execPath, ['scripts/spike/server.mjs'], { encoding: 'utf8', env: { ...process.env, ...env }, timeout: 5000 });
+    const result = spawnSync(process.execPath, ['scripts/spike/server.mjs'], { encoding: 'utf8', env: { ...process.env, ...env }, timeout: 30000 });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /requires QP_ENV=spike|Fault flags are forbidden/);
   }
