@@ -153,6 +153,10 @@ one real shutdown (owner, needs a demo project).
   5. A 429 (quota or rate) is seen as `ENQUEUE_FAILED:RESOURCE_EXHAUSTED` with `retryAfterSeconds` when QStash sends `Retry-After`; check whether QStash sends it at all.
   6. The deduplication retention actually applied (docs say 90 days; the local profile uses that figure, unmeasured).
   7. Deliveries carry `Upstash-Retried`; the worker does not read it yet (it logs `taskRetryCount` only from `x-cloudtasks-*`), decide in B9-3 whether to map it.
+- **B9-5 (PR #4 F4):** record `error.message` (`ENQUEUE_FAILED:<CODE>`, value-free) as `dispatch.lastError` instead of the generic `ENQUEUE_FAILED`, so quota exhaustion (`RESOURCE_EXHAUSTED`) is distinguishable. `Retry-After` (`retryAfterSeconds`) is still unused by consumers.
+- **Local `qstash` profile assumptions (PR #4 F7):** it keeps the Cloud Tasks rate (20/s) and concurrency (30) and honours `Retry-After` on every non-2xx up to 86400 s. None of this is measured QStash behaviour; documented as assumptions in the profile's comments.
+- **Before B9-9 (PR #4 F8):** run the emulator suite, T1-T13 and the race suites once with the `qstash` local profile; the factory never selects it today, so nothing has exercised it end to end.
+- **Ownership note (PR #4 F10):** `apps/worker/README.md` is Codex-owned and was edited in B9-1 and B9-2 (docs lines only); flag it in the PR ownership note.
 
 ## CCR log
 

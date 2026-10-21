@@ -17,7 +17,7 @@ export function createDispatchQueue(config: Config, clock: Clock, log: Logger) {
     return new QStashQueue({ token: config.QSTASH_TOKEN, baseUrl: config.QSTASH_URL, workerUrl: config.QP_WORKER_URL,
       retries: config.QP_QSTASH_RETRIES, timeout: config.QP_QSTASH_TIMEOUT }, log, clock);
   }
-  if (config.QP_ENV === 'production') throw new Error('Production requires Cloud Tasks');
+  if (config.QP_ENV === 'production') throw new Error('Production requires the cloud or qstash queue adapter');
   return new LocalDispatchQueue(clock, { environment: config.QP_ENV, faults: {
     ...(process.env.QP_FAULT_CREATE === 'fail' && { create: 'fail' }),
     ...(process.env.QP_FAULT_CREATE === 'ambiguous' && { create: 'ambiguous' }),

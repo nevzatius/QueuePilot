@@ -8,10 +8,11 @@ import type { DispatchQueue } from '../queue.js';
 
 /**
  * Timeout of the publish call to QStash itself. It is unrelated to `Upstash-Timeout`, which is how long
- * QStash waits for the worker once it delivers. Publishing is a small request to a hosted API, so a few
- * seconds is generous; the API's own enqueue budget (2 s, `enqueueAccepted`) usually cancels first.
+ * QStash waits for the worker once it delivers. The caller's enqueue budget is 2 s (`enqueueAccepted`);
+ * this one is lower so that the adapter's own transient DEADLINE_EXCEEDED classification (and log line)
+ * fires first, instead of the caller aborting with a bare CANCELLED.
  */
-export const QSTASH_PUBLISH_TIMEOUT_MS = 3000;
+export const QSTASH_PUBLISH_TIMEOUT_MS = 1500;
 /** Longest Retry-After we pass on. QStash daily-quota resets can quote hours; the reconciler cadence is minutes. */
 const MAX_RETRY_AFTER_SECONDS = 86_400;
 const MAX_BODY_CHARS = 4096;
@@ -26,6 +27,8 @@ export interface QStashResponse {
   status: number;
   headers: { get(name: string): string | null };
   text(): Promise<string>;
+  /** Present on a real Response; used to drop an unread error body. */
+  body?: { cancel(): Promise<void> } | null;
 }
 export type QStashFetch = (url: string, init: {
   method: 'POST'; headers: Record<string, string>; body: string; signal: AbortSignal; redirect: 'manual';
@@ -122,11 +125,12 @@ export class QStashQueue implements DispatchQueue {
       signal.throwIfAborted();
       // One deadline covers the request and the body read.
       const response = await this.post(payload, AbortSignal.any([signal, timeout]));
-      // A refusal is classified from the status alone; its body is never read.
+      // A refusal is classified from the status alone; its body is never read, only released.
       if (response.status < 200 || response.status >= 300) {
+        await response.body?.cancel().catch(() => {});
         throw classifyStatus(response.status, response.status === 429 ? parseRetryAfter(response.headers.get('retry-after'), this.clock.now()) : undefined);
       }
-      return this.map(response.status, await response.text());
+      return this.map(response.status, await this.readBody(response, payload, AbortSignal.any([signal, timeout])));
     } catch (error) {
       const failure = error instanceof QueueEnqueueError ? error
         : new QueueEnqueueError(timeout.aborted ? 'DEADLINE_EXCEEDED' : signal.aborted ? 'CANCELLED' : 'UNAVAILABLE', 'transient');
@@ -152,6 +156,19 @@ export class QStashQueue implements DispatchQueue {
         'Upstash-Timeout': this.config.timeout,
       },
     });
+  }
+
+  /** The message exists once the status is 2xx, so an unreadable body is not a failed publish. */
+  private async readBody(response: QStashResponse, payload: TaskPayload, signal: AbortSignal): Promise<string> {
+    try {
+      return await Promise.race([response.text(), new Promise<never>((_resolve, reject) => {
+        if (signal.aborted) reject(new Error('aborted'));
+        else signal.addEventListener('abort', () => { reject(new Error('aborted')); }, { once: true });
+      })]);
+    } catch {
+      this.log.warn({ ...payload, code: 'ENQUEUE_BODY_UNREADABLE', status: response.status }, 'QStash accepted the message but its answer could not be read');
+      return '';
+    }
   }
 
   private map(status: number, text: string): PublishOutcome {

@@ -14,6 +14,7 @@ const signal = () => new AbortController().signal;
 
 const respond = (status: number, body = '', headers: Record<string, string> = {}): QStashResponse => ({
   status, headers: { get: (name) => headers[name.toLowerCase()] ?? null }, text: async () => body,
+  body: { cancel: vi.fn(async () => undefined) },
 });
 function fixture(send: QStashFetch, overrides: Partial<QStashQueueConfig> = {}) {
   const lines: string[] = [];
@@ -132,9 +133,17 @@ describe('QStashQueue response mapping', () => {
   it.each(failures)('%s', async (_label, response, expected) => {
     const { queue, lines } = fixture(replying(response));
     const p = payload();
+    const text = vi.spyOn(response, 'text');
     const error = await queue.enqueue(p, signal()).then(() => undefined, (e: unknown) => e);
     expect(error).toBeInstanceOf(QueueEnqueueError);
     expect(error).toMatchObject(expected);
+    // Strict on the classification fields: a row that does not expect retryAfterSeconds fails if one is set.
+    const { code, failureClass, retryAfterSeconds } = error as QueueEnqueueError;
+    expect({ code, failureClass, retryAfterSeconds }).toEqual({ code: expected.code, failureClass: expected.failureClass, retryAfterSeconds: expected.retryAfterSeconds });
+    // A refusal releases its body without reading it; a 2xx without proof reads it and has nothing to release.
+    const refused = response.status < 200 || response.status >= 300;
+    expect(response.body!.cancel).toHaveBeenCalledTimes(refused ? 1 : 0);
+    expect(text).toHaveBeenCalledTimes(refused ? 0 : 1);
     expect((error as Error).message).toBe(`ENQUEUE_FAILED:${expected.code}`);
     expect(JSON.parse(lines[0]!)).toMatchObject({ code: 'ENQUEUE_FAILED', errorCode: expected.code, failureClass: expected.failureClass,
       requestId: p.requestId, seq: 1, correlationId: p.correlationId });
@@ -145,6 +154,27 @@ describe('QStashQueue response mapping', () => {
     const text = vi.spyOn(response, 'text');
     await expect(fixture(replying(response)).queue.enqueue(payload(), signal())).rejects.toThrow('ENQUEUE_FAILED:UNAUTHENTICATED');
     expect(text).not.toHaveBeenCalled();
+  });
+
+  it('a 2xx whose body cannot be read is still CREATED, with a value-free warning', async () => {
+    const unreadable = { ...respond(201), text: () => Promise.reject(new Error(`stream broke ${TOKEN}`)) };
+    const { queue, lines } = fixture(replying(unreadable));
+    await expect(queue.publish(payload(), signal())).resolves.toEqual({ outcome: 'CREATED' });
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!)).toMatchObject({ level: 40, code: 'ENQUEUE_BODY_UNREADABLE', status: 201 });
+    expect(lines[0]).not.toContain(TOKEN);
+    expect(lines.join('')).not.toContain('ENQUEUE_FAILED');
+  });
+
+  it('a 2xx whose body read hangs past the publish timeout is still CREATED', async () => {
+    const hanging = { ...respond(201), text: () => new Promise<string>(() => undefined) };
+    const { queue } = fixture(replying(hanging), { publishTimeoutMs: 20 });
+    await expect(queue.publish(payload(), signal())).resolves.toEqual({ outcome: 'CREATED' });
+  });
+
+  it('a 201 with an oversized body is CREATED', async () => {
+    const huge = respond(201, `{"messageId":"msg_1","pad":"${'x'.repeat(10_000)}"}`);
+    await expect(fixture(replying(huge)).queue.publish(payload(), signal())).resolves.toEqual({ outcome: 'CREATED' });
   });
 
   it('never retries on its own: one fetch per enqueue, whatever the status', async () => {
@@ -174,6 +204,17 @@ describe('QStashQueue network failures and the publish-call timeout', () => {
     const { queue } = fixture(send, { publishTimeoutMs: 20 });
     const error = await queue.enqueue(payload(), signal()).then(() => undefined, (e: unknown) => e);
     expect(error).toMatchObject({ code: 'DEADLINE_EXCEEDED', failureClass: 'transient', message: 'ENQUEUE_FAILED:DEADLINE_EXCEEDED' });
+  });
+
+  it('classifies a publish slower than the adapter timeout as a transient deadline error, before the 2 s caller budget', async () => {
+    expect(QSTASH_PUBLISH_TIMEOUT_MS).toBeLessThan(2000);
+    const send: QStashFetch = (_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => { reject(init.signal.reason); });
+    });
+    const started = Date.now();
+    const error = await fixture(send).queue.enqueue(payload(), AbortSignal.timeout(2000)).then(() => undefined, (e: unknown) => e);
+    expect(error).toMatchObject({ code: 'DEADLINE_EXCEEDED', failureClass: 'transient' });
+    expect(Date.now() - started).toBeLessThan(2000);
   });
 
   it('stops before fetching when the caller already aborted, and reports it as cancelled', async () => {

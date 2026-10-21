@@ -9,6 +9,8 @@ export type LocalFaults = { create?: 'fail' | 'ambiguous'; probe?: TaskProbe['re
  * Knobs of the `qstash` profile. `retries` follows Upstash-Retries (deliveries = retries + 1), `timeoutMs`
  * follows Upstash-Timeout. `dedupWindowMs` defaults to the 90 days Upstash documents for deduplication ids;
  * that figure is documented, not measured by us.
+ * ASSUMPTIONS, none measured on QStash: the profile keeps the Cloud Tasks dispatch rate (20/s) and
+ * concurrency (30), and honours the worker's Retry-After on every non-2xx up to 86400 s.
  */
 export type LocalQStashOptions = { retries?: number; timeoutMs?: number; dedupWindowMs?: number };
 export type LocalQueueOptions = {
