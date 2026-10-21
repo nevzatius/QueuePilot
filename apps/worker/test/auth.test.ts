@@ -6,7 +6,7 @@ const audience = 'https://worker.example.test';
 const taskEmail = 'qp-tasks-invoker-sa@qp-test-project.iam.gserviceaccount.com';
 const schedulerEmail = 'qp-scheduler-sa@qp-test-project.iam.gserviceaccount.com';
 const config = () => loadConfig({ QP_ENV: 'production', GCLOUD_PROJECT: 'qp-test-project',
-  QP_WORKER_URL: audience, QP_TASKS_OIDC_AUDIENCE: audience, QP_TASKS_INVOKER_SA: taskEmail });
+  QP_WORKER_URL: audience, QP_TASKS_OIDC_AUDIENCE: audience, QP_TASKS_INVOKER_SA: taskEmail, REDIS_URL: 'rediss://redis.invalid:6380' });
 
 describe('private worker caller verification', () => {
   it('rejects missing/malformed auth without touching token verifier', async () => {

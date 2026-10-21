@@ -20,6 +20,25 @@ without trailing slash), `QP_TASKS_OIDC_AUDIENCE` (same origin), `QP_TASKS_INVOK
 local auth, emulator overrides and **any** `QP_FAULT_*` environment variable, even `false`.
 It refuses to start if cloud/OIDC configuration is incomplete.
 
+QStash configuration (ADR-019 free profile; selecting it still stops startup until the B9-2 adapter exists):
+- `QP_QUEUE_ADAPTER=qstash`: select the QStash backend (`local` | `cloud` | `qstash`).
+- `QSTASH_TOKEN`: secret, publish token for the QStash API.
+- `QSTASH_CURRENT_SIGNING_KEY` / `QSTASH_NEXT_SIGNING_KEY`: secrets, both accepted by the worker signature verifier (B9-3) so key rotation never drops deliveries.
+- `QP_WORKER_URL`: public worker origin QStash calls (must be `https` in production). Shared with the other backends.
+- `QP_QSTASH_RETRIES`: delivery retries, integer 0-3, default 2.
+- `QP_QSTASH_TIMEOUT`: per-delivery timeout as a Go duration WITH a unit (`90s`, `1m30s`), default `90s`, and must be between 60 s and 15 min inclusive. A bare number is rejected because QStash answers 400. The lower bound covers a Render free cold start (about 8-14 s measured, up to about 50 s per Render docs) plus processing.
+
+In the free profile all secrets (`QSTASH_*`, `REDIS_URL`) live as Render secret environment variables; there is no Secret Manager.
+Production rejects the local queue, missing or blank QStash settings, a non-HTTPS worker URL, and mixed settings
+(QStash with `QP_TASKS_*`, `QP_SCHEDULER_SA` or `QP_REGION`; Cloud Tasks with `QSTASH_*` or `QP_QSTASH_*`).
+Production also requires `REDIS_URL` to use `rediss:` (TLS).
+
+Log redaction is NOT generic. The logger censors only these key names, at the top level and one level deep
+(`*.key`): `QSTASH_TOKEN`, `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY`, `REDIS_URL`, plus the
+existing `authorization`, `cookie(s)` and `description` paths. A credential under any other key name or deeper
+nesting is logged in clear. Convention: never log config objects; log `redactConfig(config)` if a dump is needed.
+Validation errors are constant messages and never carry the input or a cause.
+
 The queue accepts an injected Tasks SDK-shaped client. Its default transport uses the Cloud Tasks
 v2 REST API with lazily resolved Application Default Credentials through `google-auth-library`.
 No credentials are resolved at startup. Requests have a 2s transport timeout; enqueue callers also

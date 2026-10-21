@@ -147,7 +147,7 @@ describe('atomic submission quotas', () => {
     expect(loadConfig({ QP_ENV: 'test', QP_QUOTA_FAILURE_MODE: 'open' }).QP_QUOTA_FAILURE_MODE).toBe('open');
     const production = { QP_ENV: 'production', GCLOUD_PROJECT: 'real-project', QP_QUEUE_ADAPTER: 'cloud',
       QP_WORKER_URL: 'https://worker.example.test', QP_TASKS_OIDC_AUDIENCE: 'https://worker.example.test',
-      QP_TASKS_INVOKER_SA: 'worker@real-project.iam.gserviceaccount.com' };
+      QP_TASKS_INVOKER_SA: 'worker@real-project.iam.gserviceaccount.com', REDIS_URL: 'rediss://redis.invalid:6380' };
     expect(() => loadConfig(production)).not.toThrow();
     expect(() => loadConfig({ ...production, QP_QUOTA_FAILURE_MODE: 'open' })).toThrow('Unsafe production configuration');
     await new RedisQuotaStore(new ManagedRedis(undefined, clock), clock, 'open').consume('alpha', 'alice', limits);
