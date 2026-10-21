@@ -1,5 +1,6 @@
+import util from 'node:util';
 import { describe, expect, it } from 'vitest';
-import { createDispatchQueue, createLogger, loadConfig, LocalDispatchQueue, redactConfig } from '@queuepilot/core';
+import { createDispatchQueue, createLogger, loadConfig, LocalDispatchQueue, parseGoDurationMs, redactConfig } from '@queuepilot/core';
 
 // Recognisable fakes; the assertions below prove none of them reaches any output.
 const FAKE = { token: 'FAKE-qstash-token-7f3a91', current: 'FAKE-current-key-4c2d80', next: 'FAKE-next-key-9be615',
@@ -40,8 +41,17 @@ describe('queue backend selection', () => {
     expect(() => loadConfig({ ...PROD_QSTASH, QP_QSTASH_RETRIES: value })).toThrow();
   });
 
-  it.each(['60s', '1m30s', '500ms', '1.5s', '2h'])('accepts timeout %s', (value) => {
+  it.each(['60s', '1m30s', '15m', '900s', '1m', '14m59s'])('accepts timeout %s', (value) => {
     expect(loadConfig({ ...PROD_QSTASH, QP_QSTASH_TIMEOUT: value }).QP_QSTASH_TIMEOUT).toBe(value);
+  });
+
+  it.each(['59s', '59999ms', '16m', '1h30m', '2h', '1ms', '1ns', '99999999999999h'])('rejects timeout outside 60s..15m: %s', (value) => {
+    expect(() => loadConfig({ ...PROD_QSTASH, QP_QSTASH_TIMEOUT: value })).toThrow(/Invalid API configuration/);
+  });
+
+  it('1h30m is 90 minutes, above the 15 minute ceiling, and must not be read as 90 seconds', () => {
+    expect(parseGoDurationMs('1h30m')).toBe(90 * 60_000);
+    expect(() => loadConfig({ ...PROD_QSTASH, QP_QSTASH_TIMEOUT: '1h30m' })).toThrow();
   });
 
   it.each(['60', '1.5', '60 s', 's', '', '0s', '-5s', '10d'])('rejects timeout without a valid unit: %j', (value) => {
@@ -132,5 +142,75 @@ describe('secrets hygiene', () => {
     logger.info({ ...config }, 'flat config');
     expect(lines).toHaveLength(2);
     expectNoSecret(lines.join('\n'));
+  });
+});
+
+describe('F1 regression: malformed URLs never leak a secret through the thrown error', () => {
+  const PASS = 'FAKE-leak-pass-5a7c13';
+  const MALFORMED: Array<[string, Record<string, string>]> = [
+    ['REDIS_URL missing a colon', { ...PROD_QSTASH, REDIS_URL: `rediss//default:${PASS}@host.invalid:6379` }],
+    ['REDIS_URL with a bad port', { ...PROD_QSTASH, REDIS_URL: `rediss://default:${PASS}@host.invalid:99999999` }],
+    ['REDIS_URL with a bad host', { ...PROD_QSTASH, REDIS_URL: `rediss://default:${PASS}@ho st.invalid:6379` }],
+    ['worker URL missing a colon', { ...PROD_QSTASH, QP_WORKER_URL: `https//user:${PASS}@worker.invalid` }],
+    ['worker URL with a bad port', { ...PROD_QSTASH, QP_WORKER_URL: `https://user:${PASS}@worker.invalid:99999999` }],
+  ];
+
+  it.each(MALFORMED)('%s', (_label, env) => {
+    let thrown: unknown;
+    try { loadConfig(env); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(Error);
+    const error = thrown as Error;
+    const surfaces = [util.inspect(error, { depth: null, showHidden: true }), error.message, error.stack ?? '',
+      util.inspect((error as { cause?: unknown }).cause, { depth: null, showHidden: true }),
+      ...Object.keys(error).map((key) => util.inspect((error as unknown as Record<string, unknown>)[key], { depth: null, showHidden: true }))];
+    for (const surface of surfaces) expect(surface).not.toContain(PASS);
+    expect('cause' in error).toBe(false);
+  });
+});
+
+describe('rediss in production', () => {
+  it('rejects redis:// and accepts rediss://', () => {
+    expect(() => loadConfig({ ...PROD_QSTASH, REDIS_URL: 'redis://default:pw@redis.invalid:6379' })).toThrow(/rediss/);
+    expect(() => loadConfig({ ...PROD_CLOUD, REDIS_URL: 'redis://default:pw@redis.invalid:6379' })).toThrow(/rediss/);
+    expect(() => loadConfig({ ...PROD_QSTASH, REDIS_URL: 'rediss://default:pw@redis.invalid:6379' })).not.toThrow();
+  });
+  it('still allows redis:// outside production', () => {
+    expect(() => loadConfig({ REDIS_URL: 'redis://127.0.0.1:6379' })).not.toThrow();
+  });
+});
+
+describe('mixed-config gaps', () => {
+  it.each([
+    ['QP_REGION', { QP_REGION: 'europe-west1' }],
+    ['QP_SCHEDULER_SA', { QP_SCHEDULER_SA: 'sched@qp-test-project.iam.gserviceaccount.com' }],
+  ])('qstash with %s is rejected', (_name, extra) => {
+    expect(() => loadConfig({ ...PROD_QSTASH, ...extra })).toThrow(/Ambiguous/);
+  });
+
+  it.each([
+    ['QSTASH_CURRENT_SIGNING_KEY', { QSTASH_CURRENT_SIGNING_KEY: FAKE.current }],
+    ['QSTASH_NEXT_SIGNING_KEY', { QSTASH_NEXT_SIGNING_KEY: FAKE.next }],
+    ['QP_QSTASH_RETRIES', { QP_QSTASH_RETRIES: '2' }],
+  ])('cloud with %s is rejected', (_name, extra) => {
+    expect(() => loadConfig({ ...PROD_CLOUD, ...extra })).toThrow(/Ambiguous/);
+  });
+
+  it('current behavior: blank foreign QSTASH_* values under cloud are ignored (isSet treats blank as unset)', () => {
+    expect(() => loadConfig({ ...PROD_CLOUD, QSTASH_TOKEN: '', QSTASH_CURRENT_SIGNING_KEY: '  ', QSTASH_NEXT_SIGNING_KEY: '' })).not.toThrow();
+  });
+
+  it('current behavior: blank foreign QP_QSTASH_* values under cloud are rejected by the schema, not by the mixed-config check', () => {
+    expect(() => loadConfig({ ...PROD_CLOUD, QP_QSTASH_RETRIES: '' })).toThrow(/Invalid API configuration/);
+    expect(() => loadConfig({ ...PROD_CLOUD, QP_QSTASH_TIMEOUT: '' })).toThrow(/Invalid API configuration/);
+  });
+
+  it.each([['qstash', PROD_QSTASH], ['cloud', PROD_CLOUD]])('ftp: worker URL is rejected in production (%s)', (_name, env) => {
+    expect(() => loadConfig({ ...env, QP_WORKER_URL: 'ftp://qp-worker.example.test', QP_TASKS_OIDC_AUDIENCE: 'ftp://qp-worker.example.test' })).toThrow();
+  });
+
+  it('validation errors carry no cause', () => {
+    for (const env of [{ ...PROD_QSTASH, QP_QSTASH_TIMEOUT: '30s' }, { ...PROD_QSTASH, QP_TASKS_QUEUE: 'x' }, without(PROD_QSTASH, 'QSTASH_TOKEN')]) {
+      try { loadConfig(env); expect.unreachable(); } catch (error) { expect('cause' in (error as Error)).toBe(false); }
+    }
   });
 });

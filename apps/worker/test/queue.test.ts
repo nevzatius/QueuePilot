@@ -102,7 +102,7 @@ describe('LocalDispatchQueue deterministic transport model', () => {
   it('fault injection and local adapter can never start in production', () => {
     expect(() => new LocalDispatchQueue({ now: () => 0 }, { environment: 'production' })).toThrow();
     const production = { QP_ENV: 'production', GCLOUD_PROJECT: config.project, QP_WORKER_URL: config.workerUrl,
-      QP_TASKS_OIDC_AUDIENCE: config.audience, QP_TASKS_INVOKER_SA: config.serviceAccount };
+      QP_TASKS_OIDC_AUDIENCE: config.audience, QP_TASKS_INVOKER_SA: config.serviceAccount, REDIS_URL: 'rediss://redis.invalid:6380' };
     expect(loadConfig(production).QP_QUEUE_ADAPTER).toBe('cloud');
     expect(() => loadConfig({ ...production, QP_QUEUE_ADAPTER: 'local' })).toThrow();
     expect(() => loadConfig({ ...production, QP_FAULT_CREATE: 'false' })).toThrow();

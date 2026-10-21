@@ -139,6 +139,13 @@ read-only files. Security review (security-reviewer, read-only): no real finding
 public-API gate of its own, pre-existing; `corepack enable` fetches the pnpm version named in `packageManager` without a hash pin). Accept still open: fresh-project run and
 one real shutdown (owner, needs a demo project).
 
+## B9 follow-ups (PR #3 review, `claude/b9-1-config-factory`)
+
+- **Deferred F6:** in production reject loopback, private and link-local worker URL hosts for both backends. Blocked: the smoke-env scripts use localhost, so adapt them first.
+- **B9-3 must (F3, section 7):** add a `qstash` value to `QP_WORKER_AUTH_MODE`; production requires the mode matching the adapter (cloud -> oidc, qstash -> qstash) and rejects mismatches; branch `createCallerVerifier` to a QStash signature verifier that accepts both signing keys for both the tasks and scheduler callers (the reconciler tick also comes from QStash); keep the verifier-before-SDK-clients order and the local-auth check; add a test that `loadConfig(PROD_QSTASH)` followed by `createCallerVerifier` raises no OIDC error.
+- **B9-7 must:** leave `QP_REGION` out of `render.yaml` (qstash rejects it as a Cloud Tasks setting), even though `infra/spec.mjs` sets it for the GCP path.
+- **Open B9-2 live check:** the free-plan maximum for the `Upstash-Timeout` header (config currently allows up to 15 min, QStash's documented maximum).
+
 ## CCR log
 
 _(none)_  T1 row note: ADR-017 gives seq=2 after a lost API enqueue (the card text above still says seq=1).

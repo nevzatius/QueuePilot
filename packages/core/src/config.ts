@@ -8,6 +8,24 @@ const integer = (fallback: number, max = 1_000_000) => z.coerce.number().int().p
  * delivery that is still starting up.
  */
 const GO_DURATION = /^(?:\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h))+$/;
+/**
+ * Bounds for QP_QSTASH_TIMEOUT. Lower: covers the Render free cold start (8-14 s measured, up to about
+ * 50 s documented) plus processing. Upper: QStash's documented maximum HTTP timeout. The free-plan
+ * maximum for the Upstash-Timeout header is NOT verified yet (open B9-2 live check).
+ */
+export const QSTASH_TIMEOUT_MIN_MS = 60_000;
+export const QSTASH_TIMEOUT_MAX_MS = 15 * 60_000;
+const DURATION_UNIT_MS: Record<string, number> = { ns: 1e-6, us: 1e-3, 'µs': 1e-3, ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
+/** Go duration (already matched by GO_DURATION) to milliseconds. */
+export function parseGoDurationMs(value: string): number {
+  let total = 0;
+  for (const [, amount, unit] of value.matchAll(/(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)/g)) total += Number(amount) * DURATION_UNIT_MS[unit!]!;
+  return total;
+}
+const withinTimeoutBounds = (value: string) => {
+  const ms = parseGoDurationMs(value);
+  return ms >= QSTASH_TIMEOUT_MIN_MS && ms <= QSTASH_TIMEOUT_MAX_MS;
+};
 const QSTASH_VARS = ['QSTASH_TOKEN', 'QSTASH_CURRENT_SIGNING_KEY', 'QSTASH_NEXT_SIGNING_KEY'] as const;
 const QSTASH_OPTIONAL_VARS = ['QP_QSTASH_RETRIES', 'QP_QSTASH_TIMEOUT'] as const;
 const CLOUD_TASKS_VARS = ['QP_TASKS_INVOKER_SA', 'QP_TASKS_OIDC_AUDIENCE', 'QP_SCHEDULER_SA', 'QP_REGION', 'QP_TASKS_QUEUE'] as const;
@@ -35,7 +53,7 @@ const ConfigSchema = z.object({
   QP_INGEST_MAX_INFLIGHT: integer(32),
   QP_MAX_BACKLOG: integer(20_000),
   QP_MAX_INSTANCES: integer(5),
-  REDIS_URL: z.url().refine((value) => ['redis:', 'rediss:'].includes(new URL(value).protocol)).default('redis://127.0.0.1:6379'),
+  REDIS_URL: z.url().refine((value) => URL.canParse(value) && ['redis:', 'rediss:'].includes(new URL(value).protocol)).default('redis://127.0.0.1:6379'),
   QP_REDIS_ENABLED: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
   QP_QUOTA_FAILURE_MODE: z.enum(['closed', 'open']).default('closed'),
   QSTASH_TOKEN: z.string().optional(),
@@ -43,15 +61,18 @@ const ConfigSchema = z.object({
   QSTASH_NEXT_SIGNING_KEY: z.string().optional(),
   // A regex, not z.coerce: an empty string would coerce to 0 retries silently.
   QP_QSTASH_RETRIES: z.string().regex(/^[0-3]$/).default('2').transform(Number),
-  QP_QSTASH_TIMEOUT: z.string().regex(GO_DURATION).refine((value) => /[1-9]/.test(value)).default('90s'),
+  QP_QSTASH_TIMEOUT: z.string().regex(GO_DURATION).refine(withinTimeoutBounds).default('90s'),
 });
 export type Config = z.infer<typeof ConfigSchema>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const parsed = ConfigSchema.safeParse(env);
+  // A refine that throws would carry the raw input (possibly a credential URL) in the error; never forward it.
+  let parsed: ReturnType<typeof ConfigSchema.safeParse>;
+  try { parsed = ConfigSchema.safeParse(env); } catch { throw new Error('Invalid API configuration'); }
   if (!parsed.success) throw new Error('Invalid API configuration');
   const config = parsed.data;
   config.QP_QUEUE_ADAPTER ??= config.QP_ENV === 'production' ? 'cloud' : 'local';
+  if (!URL.canParse(config.QP_WORKER_URL)) throw new Error('Invalid API configuration');
   const workerUrl = new URL(config.QP_WORKER_URL);
   if (workerUrl.origin !== config.QP_WORKER_URL) {
     throw new Error('Worker URL must be an origin');
@@ -77,6 +98,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         || config.QP_QUOTA_FAILURE_MODE === 'open' || Object.keys(env).some((key) => key.startsWith('QP_FAULT_'))) {
       throw new Error('Unsafe production configuration');
     }
+    if (new URL(config.REDIS_URL).protocol !== 'rediss:') throw new Error('Production requires a TLS Redis URL (rediss:)');
     const foreign: readonly string[] = config.QP_QUEUE_ADAPTER === 'qstash' ? CLOUD_TASKS_VARS : [...QSTASH_VARS, ...QSTASH_OPTIONAL_VARS];
     if (foreign.some((key) => isSet(env[key]))) {
       throw new Error('Ambiguous production configuration: queue backend settings are mixed');
