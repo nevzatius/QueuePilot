@@ -10,6 +10,7 @@ export * from './queue.js';
 export * from './queue/cloud.js';
 export * from './queue/rest.js';
 export * from './queue/local.js';
+export * from './queue/qstash.js';
 export * from './queue/runtime.js';
 export * from './processing/store.js';
 export * from './processing/worker.js';

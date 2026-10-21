@@ -1,7 +1,7 @@
 # Project State
 
 Single writer: Claude Code (ADR-013). Keep this file under 60 lines.
-Last updated: 2026-10-20 (session 5), by Claude Code (B9-0: ADR-019, docs only, branch `claude/b9-0-adr-019`).
+Last updated: 2026-10-21, by Claude Code (B9-2: `QStashQueue` + local qstash profile, branch `claude/b9-2-qstash-adapter`, PR open).
 
 ## Phase
 
@@ -57,4 +57,4 @@ T3 `.claude/agents/architecture-reviewer.md` is stale against ADR-017; T4 stale 
 
 ## Next step
 
-1. Review and merge the B9-0 PR (ADR-019). 2. Start B9-1 (config, production guard, adapter factory). 3. Owner: create the accounts in Blockers 1-2 in parallel.
+1. Review and merge the B9-2 PR (B9-0, B9-1 are merged). 2. Start B9-3 (worker QStash signature verifier, `Retry-After`). 3. Owner: create the accounts in Blockers 1-2 in parallel. B9-2 live checks are listed in TASKS.md (B9 follow-ups).

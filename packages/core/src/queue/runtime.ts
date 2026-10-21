@@ -3,6 +3,7 @@ import type { Logger } from 'pino';
 import type { Config } from '../config.js';
 import { CloudTasksQueue } from './cloud.js';
 import { LocalDispatchQueue } from './local.js';
+import { parseRetryAfter, QStashQueue } from './qstash.js';
 
 export function createDispatchQueue(config: Config, clock: Clock, log: Logger) {
   if (config.QP_QUEUE_ADAPTER === 'cloud') return new CloudTasksQueue({
@@ -10,9 +11,13 @@ export function createDispatchQueue(config: Config, clock: Clock, log: Logger) {
     workerUrl: config.QP_WORKER_URL, audience: config.QP_TASKS_OIDC_AUDIENCE!,
     serviceAccount: config.QP_TASKS_INVOKER_SA!, deadlineSeconds: config.QP_TASK_DISPATCH_DEADLINE_SECONDS,
   }, log);
-  // No silent fallback: selecting qstash before its adapter exists must stop startup.
-  if (config.QP_QUEUE_ADAPTER === 'qstash') throw new Error('QP_QUEUE_ADAPTER=qstash is not available yet: the QStashQueue adapter lands in B9-2');
-  if (config.QP_ENV === 'production') throw new Error('Production requires Cloud Tasks');
+  if (config.QP_QUEUE_ADAPTER === 'qstash') {
+    // loadConfig already rejects a missing token; this stays as the last line against a hand-built Config.
+    if (!config.QSTASH_TOKEN) throw new Error('QStash queue requires QSTASH_TOKEN');
+    return new QStashQueue({ token: config.QSTASH_TOKEN, baseUrl: config.QSTASH_URL, workerUrl: config.QP_WORKER_URL,
+      retries: config.QP_QSTASH_RETRIES, timeout: config.QP_QSTASH_TIMEOUT }, log, clock);
+  }
+  if (config.QP_ENV === 'production') throw new Error('Production requires the cloud or qstash queue adapter');
   return new LocalDispatchQueue(clock, { environment: config.QP_ENV, faults: {
     ...(process.env.QP_FAULT_CREATE === 'fail' && { create: 'fail' }),
     ...(process.env.QP_FAULT_CREATE === 'ambiguous' && { create: 'ambiguous' }),
@@ -30,9 +35,11 @@ export function startLocalDispatch(queue: LocalDispatchQueue, workerUrl: string,
     inFlight = queue.pump(async (payload, headers) => {
       const response = await fetch(`${workerUrl}/internal/tasks`, { method: 'POST',
         headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(30_000) });
+        // Longer than the queue's own wait, so the queue gives up first and the handler is not cut off.
+        signal: AbortSignal.timeout(queue.deadlineMs + 5000) });
       await response.body?.cancel();
-      return response.status;
+      const retryAfterSeconds = parseRetryAfter(response.headers.get('retry-after'), Date.now());
+      return retryAfterSeconds === undefined ? response.status : { status: response.status, retryAfterSeconds };
     }).catch(() => { log.error({ code: 'LOCAL_DISPATCH_FAILED', correlationId: 'local-dispatch' }, 'Local dispatch failed'); }).finally(() => { busy = false; });
   }, 100);
   timer.unref();

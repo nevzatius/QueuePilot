@@ -27,7 +27,17 @@ const withinTimeoutBounds = (value: string) => {
   return ms >= QSTASH_TIMEOUT_MIN_MS && ms <= QSTASH_TIMEOUT_MAX_MS;
 };
 const QSTASH_VARS = ['QSTASH_TOKEN', 'QSTASH_CURRENT_SIGNING_KEY', 'QSTASH_NEXT_SIGNING_KEY'] as const;
-const QSTASH_OPTIONAL_VARS = ['QP_QSTASH_RETRIES', 'QP_QSTASH_TIMEOUT'] as const;
+const QSTASH_OPTIONAL_VARS = ['QP_QSTASH_RETRIES', 'QP_QSTASH_TIMEOUT', 'QSTASH_URL'] as const;
+/** QStash tokens are regional; the default is the global endpoint. Not a secret, but never echoed from an invalid value. */
+export const QSTASH_DEFAULT_URL = 'https://qstash.upstash.io';
+/** True for an https origin with no credentials, path, query or fragment (URL.origin drops all of those). */
+export function isHttpsOrigin(value: string): boolean {
+  return URL.canParse(value) && new URL(value).protocol === 'https:' && new URL(value).origin === value;
+}
+/** The shared check for QP_QSTASH_TIMEOUT, used by config and by the adapter constructor. */
+export function isQStashTimeout(value: string): boolean {
+  return GO_DURATION.test(value) && withinTimeoutBounds(value);
+}
 const CLOUD_TASKS_VARS = ['QP_TASKS_INVOKER_SA', 'QP_TASKS_OIDC_AUDIENCE', 'QP_SCHEDULER_SA', 'QP_REGION', 'QP_TASKS_QUEUE'] as const;
 /** Config keys whose values are credentials. Never log, dump or put them in an error. */
 export const SECRET_CONFIG_KEYS = [...QSTASH_VARS, 'REDIS_URL'] as const;
@@ -62,6 +72,8 @@ const ConfigSchema = z.object({
   // A regex, not z.coerce: an empty string would coerce to 0 retries silently.
   QP_QSTASH_RETRIES: z.string().regex(/^[0-3]$/).default('2').transform(Number),
   QP_QSTASH_TIMEOUT: z.string().regex(GO_DURATION).refine(withinTimeoutBounds).default('90s'),
+  // Checked in loadConfig, not with z.url(): a failure there must not carry the raw value.
+  QSTASH_URL: z.string().default(QSTASH_DEFAULT_URL),
 });
 export type Config = z.infer<typeof ConfigSchema>;
 
@@ -77,6 +89,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (workerUrl.origin !== config.QP_WORKER_URL) {
     throw new Error('Worker URL must be an origin');
   }
+  if (!isHttpsOrigin(config.QSTASH_URL)) throw new Error('QSTASH_URL must be an https origin');
   if (config.QP_QUEUE_ADAPTER === 'cloud' && (!config.QP_TASKS_INVOKER_SA || !config.QP_TASKS_OIDC_AUDIENCE
       || workerUrl.protocol !== 'https:' || config.QP_TASKS_OIDC_AUDIENCE !== config.QP_WORKER_URL)) {
     throw new Error('Cloud queue requires HTTPS worker origin, matching audience and invoker service account');
