@@ -144,7 +144,15 @@ one real shutdown (owner, needs a demo project).
 - **Deferred F6:** in production reject loopback, private and link-local worker URL hosts for both backends. Blocked: the smoke-env scripts use localhost, so adapt them first.
 - **B9-3 must (F3, section 7):** add a `qstash` value to `QP_WORKER_AUTH_MODE`; production requires the mode matching the adapter (cloud -> oidc, qstash -> qstash) and rejects mismatches; branch `createCallerVerifier` to a QStash signature verifier that accepts both signing keys for both the tasks and scheduler callers (the reconciler tick also comes from QStash); keep the verifier-before-SDK-clients order and the local-auth check; add a test that `loadConfig(PROD_QSTASH)` followed by `createCallerVerifier` raises no OIDC error.
 - **B9-7 must:** leave `QP_REGION` out of `render.yaml` (qstash rejects it as a Cloud Tasks setting), even though `infra/spec.mjs` sets it for the GCP path.
-- **Open B9-2 live check:** the free-plan maximum for the `Upstash-Timeout` header (config currently allows up to 15 min, QStash's documented maximum).
+- **B9-2 done on `claude/b9-2-qstash-adapter`** (`QStashQueue`, `QSTASH_URL`, `LocalDispatchQueue` `qstash` profile). Not yet verified against the real service; the checks below are mandatory for B9-9.
+- **B9-9 live checks for the QStash adapter** (none of this has been run; all unit tests use a fake fetch):
+  1. A real publish through `QStashQueue` answers **201** with a `messageId` and the worker receives exactly one delivery.
+  2. Publishing the same `(requestId, seq)` again answers **201 with `"deduplicated":true`** (the adapter maps both to CREATED; ADR-019 measured it in a spike, docs say 202). Record the exact status and body, and whether the repeat counts toward the daily message limit.
+  3. The free-plan maximum for `Upstash-Timeout` (config allows 60 s to 15 min, QStash's documented maximum). If the plan caps it lower, lower `QSTASH_TIMEOUT_MAX_MS` in `packages/core/src/config.ts`.
+  4. `QSTASH_URL` region matches the token: a wrong region answers 401/403/404 and must show as a permanent `ENQUEUE_FAILED:UNAUTHENTICATED|PERMISSION_DENIED|NOT_FOUND` log line, never as a retried transient failure.
+  5. A 429 (quota or rate) is seen as `ENQUEUE_FAILED:RESOURCE_EXHAUSTED` with `retryAfterSeconds` when QStash sends `Retry-After`; check whether QStash sends it at all.
+  6. The deduplication retention actually applied (docs say 90 days; the local profile uses that figure, unmeasured).
+  7. Deliveries carry `Upstash-Retried`; the worker does not read it yet (it logs `taskRetryCount` only from `x-cloudtasks-*`), decide in B9-3 whether to map it.
 
 ## CCR log
 

@@ -20,12 +20,13 @@ without trailing slash), `QP_TASKS_OIDC_AUDIENCE` (same origin), `QP_TASKS_INVOK
 local auth, emulator overrides and **any** `QP_FAULT_*` environment variable, even `false`.
 It refuses to start if cloud/OIDC configuration is incomplete.
 
-QStash configuration (ADR-019 free profile; selecting it still stops startup until the B9-2 adapter exists):
+QStash configuration (ADR-019 free profile; the `QStashQueue` adapter publishes to QStash, the worker signature verifier lands in B9-3):
 - `QP_QUEUE_ADAPTER=qstash`: select the QStash backend (`local` | `cloud` | `qstash`).
 - `QSTASH_TOKEN`: secret, publish token for the QStash API.
 - `QSTASH_CURRENT_SIGNING_KEY` / `QSTASH_NEXT_SIGNING_KEY`: secrets, both accepted by the worker signature verifier (B9-3) so key rotation never drops deliveries.
 - `QP_WORKER_URL`: public worker origin QStash calls (must be `https` in production). Shared with the other backends.
 - `QP_QSTASH_RETRIES`: delivery retries, integer 0-3, default 2.
+- `QSTASH_URL`: optional QStash API origin, default `https://qstash.upstash.io`. QStash tokens are regional, so use the URL shown next to your token (for example `https://qstash-eu-central-1.upstash.io`). Must be an `https` origin (no path, query, credentials or trailing slash). Not a secret, but it is a QStash-only setting: Cloud Tasks production rejects it as mixed configuration. Verify in B9-9 that the region matches the token.
 - `QP_QSTASH_TIMEOUT`: per-delivery timeout as a Go duration WITH a unit (`90s`, `1m30s`), default `90s`, and must be between 60 s and 15 min inclusive. A bare number is rejected because QStash answers 400. The lower bound covers a Render free cold start (about 8-14 s measured, up to about 50 s per Render docs) plus processing.
 
 In the free profile all secrets (`QSTASH_*`, `REDIS_URL`) live as Render secret environment variables; there is no Secret Manager.

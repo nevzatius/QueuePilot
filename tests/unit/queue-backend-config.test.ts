@@ -1,6 +1,6 @@
 import util from 'node:util';
 import { describe, expect, it } from 'vitest';
-import { createDispatchQueue, createLogger, loadConfig, LocalDispatchQueue, parseGoDurationMs, redactConfig } from '@queuepilot/core';
+import { CloudTasksQueue, createDispatchQueue, createLogger, loadConfig, LocalDispatchQueue, parseGoDurationMs, QStashQueue, redactConfig } from '@queuepilot/core';
 
 // Recognisable fakes; the assertions below prove none of them reaches any output.
 const FAKE = { token: 'FAKE-qstash-token-7f3a91', current: 'FAKE-current-key-4c2d80', next: 'FAKE-next-key-9be615',
@@ -58,9 +58,37 @@ describe('queue backend selection', () => {
     expect(() => loadConfig({ ...PROD_QSTASH, QP_QSTASH_TIMEOUT: value })).toThrow();
   });
 
-  it('selecting qstash fails fast in the factory and names B9-2, with no fallback', () => {
-    expect(() => createDispatchQueue(loadConfig(PROD_QSTASH), clock, log)).toThrow(/B9-2/);
-    expect(() => createDispatchQueue(loadConfig({ QP_QUEUE_ADAPTER: 'qstash', ...QSTASH }), clock, log)).toThrow(/B9-2/);
+  it('selecting qstash builds the QStash adapter, never the local queue or Cloud Tasks', () => {
+    for (const env of [PROD_QSTASH, { QP_QUEUE_ADAPTER: 'qstash', ...QSTASH }]) {
+      const queue = createDispatchQueue(loadConfig(env), clock, log);
+      expect(queue).toBeInstanceOf(QStashQueue);
+      expect(queue).not.toBeInstanceOf(LocalDispatchQueue);
+    }
+  });
+
+  it('selecting cloud still builds the Cloud Tasks adapter', () => {
+    expect(createDispatchQueue(loadConfig(without(PROD_CLOUD, 'QP_QUEUE_ADAPTER')), clock, log)).toBeInstanceOf(CloudTasksQueue);
+  });
+
+  it('the factory passes the validated settings to the adapter: URL, retries and timeout reach the publish call', async () => {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init: { headers: Record<string, string> }) => {
+      calls.push({ url, headers: init.headers });
+      return new Response('{"messageId":"msg_1"}', { status: 201 });
+    }) as unknown as typeof fetch;
+    try {
+      const config = loadConfig({ ...PROD_QSTASH, QSTASH_URL: 'https://qstash-eu-central-1.upstash.io', QP_QSTASH_RETRIES: '3', QP_QSTASH_TIMEOUT: '2m' });
+      await createDispatchQueue(config, clock, log).enqueue({ requestId: crypto.randomUUID(), tenantId: 'test-queue', seq: 1, correlationId: crypto.randomUUID() }, new AbortController().signal);
+    } finally { globalThis.fetch = realFetch; }
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe(`https://qstash-eu-central-1.upstash.io/v2/publish/${WORKER}/internal/tasks`);
+    expect(calls[0]!.headers).toMatchObject({ 'Upstash-Retries': '3', 'Upstash-Timeout': '2m', Authorization: `Bearer ${FAKE.token}` });
+  });
+
+  it('a hand-built Config without a token still stops startup, with no secret in the error', () => {
+    const config = { ...loadConfig(PROD_QSTASH), QSTASH_TOKEN: undefined };
+    expect(() => createDispatchQueue(config, clock, log)).toThrow(/QSTASH_TOKEN/);
   });
 
   it('the local backend still builds the local queue', () => {
@@ -125,7 +153,7 @@ describe('secrets hygiene', () => {
 
   it('factory error carries no secret', () => {
     let message = '';
-    try { createDispatchQueue(loadConfig(PROD_QSTASH), clock, log); } catch (error) { message = (error as Error).message; }
+    try { createDispatchQueue({ ...loadConfig(PROD_QSTASH), QSTASH_TOKEN: undefined }, clock, log); } catch (error) { message = (error as Error).message; }
     expect(message).not.toBe('');
     expectNoSecret(message);
   });
@@ -165,6 +193,36 @@ describe('F1 regression: malformed URLs never leak a secret through the thrown e
       ...Object.keys(error).map((key) => util.inspect((error as unknown as Record<string, unknown>)[key], { depth: null, showHidden: true }))];
     for (const surface of surfaces) expect(surface).not.toContain(PASS);
     expect('cause' in error).toBe(false);
+  });
+});
+
+describe('QSTASH_URL', () => {
+  it('defaults to the global QStash endpoint', () => {
+    expect(loadConfig(PROD_QSTASH).QSTASH_URL).toBe('https://qstash.upstash.io');
+  });
+  it.each(['https://qstash-eu-central-1.upstash.io', 'https://qstash-us-east-1.upstash.io'])('accepts the regional origin %s', (url) => {
+    expect(loadConfig({ ...PROD_QSTASH, QSTASH_URL: url }).QSTASH_URL).toBe(url);
+    expect(loadConfig({ QP_QUEUE_ADAPTER: 'qstash', ...QSTASH, QSTASH_URL: url }).QSTASH_URL).toBe(url);
+  });
+  it.each([
+    ['http', 'http://qstash.upstash.io'], ['a path', 'https://qstash.upstash.io/v2'], ['a trailing slash', 'https://qstash.upstash.io/'],
+    ['a query', 'https://qstash.upstash.io?x=1'], ['credentials', 'https://user:FAKE-url-pass-3c9d21@qstash.upstash.io'],
+    ['no scheme', 'qstash.upstash.io'], ['empty', ''], ['ftp', 'ftp://qstash.upstash.io'],
+  ])('rejects %s without echoing the value', (_label, url) => {
+    let message = '';
+    try { loadConfig({ ...PROD_QSTASH, QSTASH_URL: url }); } catch (error) { message = `${(error as Error).message}${(error as Error).stack ?? ''}`; }
+    expect(message).toMatch(/QSTASH_URL must be an https origin/);
+    expect(message).not.toContain('FAKE-url-pass-3c9d21');
+  });
+  it('is validated outside production and for the other backends too', () => {
+    expect(() => loadConfig({ QSTASH_URL: 'http://qstash.upstash.io' })).toThrow(/QSTASH_URL/);
+    expect(() => loadConfig({ QP_QUEUE_ADAPTER: 'qstash', ...QSTASH, QSTASH_URL: 'http://localhost:9999' })).toThrow(/QSTASH_URL/);
+  });
+  it('is a QStash-only setting: Cloud Tasks production rejects it as mixed config', () => {
+    expect(() => loadConfig({ ...PROD_CLOUD, QSTASH_URL: 'https://qstash.upstash.io' })).toThrow(/Ambiguous/);
+  });
+  it('is not a secret, so redactConfig keeps it readable', () => {
+    expect(redactConfig(loadConfig(PROD_QSTASH))).toMatchObject({ QSTASH_URL: 'https://qstash.upstash.io' });
   });
 });
 
