@@ -149,6 +149,8 @@ one real shutdown (owner, needs a demo project).
   3. The `sub` matches behind Render's proxy: the expected value is `QP_WORKER_URL` + path, so `QP_WORKER_URL` must be the public `https://...onrender.com` origin QStash was given. Log `CALLER_REJECTED` reason codes if any delivery fails.
   4. QStash honours `Retry-After` 60 s (409) and 300 s (503) from QueuePilot's worker, and what it does with a 300 s value (any maximum), and whether `Upstash-Retried` should be logged.
   5. Clock tolerance (30 s) is enough against real QStash timestamps (check `iat`/`exp` skew in a delivery).
+- **B9-5 must (PR #5 review F2):** the opportunistic reconcile throttle must be time-based and must also cover `/internal/reconcile`. A captured valid token plus its body can be replayed until `exp` + 30 s (the clock tolerance); each replay on the tasks route costs a transaction read and an S11 write, on the reconcile route a full scan. Optional later: a TTL cache keyed by `jti` (see N1).
+- **Replay cache rule (PR #5 review N1):** any future replay cache must key on `jti` or on the decoded signature bytes, never on the token string: base64url signatures are non-canonical (trailing bits), so one signature has several token spellings. N4 (the query string is ignored by the route match) is harmless; no change.
 - **B9-7 must:** leave `QP_REGION` out of `render.yaml` (qstash rejects it as a Cloud Tasks setting), even though `infra/spec.mjs` sets it for the GCP path.
 - **B9-2 done on `claude/b9-2-qstash-adapter`** (`QStashQueue`, `QSTASH_URL`, `LocalDispatchQueue` `qstash` profile). Not yet verified against the real service; the checks below are mandatory for B9-9.
 - **B9-9 live checks for the QStash adapter** (none of this has been run; all unit tests use a fake fetch):

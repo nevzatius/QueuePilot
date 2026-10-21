@@ -133,6 +133,28 @@ describe('worker auth mode follows the queue backend', () => {
   });
 });
 
+describe('signing keys are used untrimmed, so surrounding whitespace is rejected (PR #5 review F6)', () => {
+  it.each([
+    ['QSTASH_CURRENT_SIGNING_KEY', `${FAKE.current}
+`, 'trailing newline'],
+    ['QSTASH_CURRENT_SIGNING_KEY', ` ${FAKE.current}`, 'leading space'],
+    ['QSTASH_NEXT_SIGNING_KEY', `${FAKE.next}
+`, 'trailing CRLF'],
+    ['QSTASH_NEXT_SIGNING_KEY', `	${FAKE.next}`, 'leading tab'],
+    ['QSTASH_NEXT_SIGNING_KEY', `${FAKE.next} `, 'trailing space'],
+  ])('%s with a %s is rejected, naming only the variable', (name, value) => {
+    for (const env of [PROD_QSTASH, { QP_QUEUE_ADAPTER: 'qstash', ...QSTASH }]) {
+      let message = '';
+      try { loadConfig({ ...env, [name]: value }); } catch (error) { message = util.inspect(error, { depth: 5 }) + String(error); }
+      expect(message).toContain(`${name} must not have leading or trailing whitespace`);
+      for (const secret of SECRETS) expect(message).not.toContain(secret);
+    }
+  });
+  it('clean keys still load', () => {
+    expect(loadConfig(PROD_QSTASH).QSTASH_CURRENT_SIGNING_KEY).toBe(FAKE.current);
+  });
+});
+
 describe('production guard', () => {
   const rejections: Array<[string, Record<string, string>, RegExp]> = [
     ['local queue', { ...PROD_QSTASH, QP_QUEUE_ADAPTER: 'local' }, /Unsafe production/],

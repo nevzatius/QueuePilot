@@ -102,6 +102,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       throw new Error('QStash queue requires an HTTPS worker origin in production');
     }
   }
+  // The HMAC uses the key as given, so a stray newline or space from a pasted secret must fail loudly. Names only, never a value.
+  // Only under qstash, where the keys are used (blank foreign values under another backend stay ignored, see the mixed-config tests).
+  for (const key of ['QSTASH_CURRENT_SIGNING_KEY', 'QSTASH_NEXT_SIGNING_KEY'] as const) {
+    const value = config[key];
+    if (config.QP_QUEUE_ADAPTER === 'qstash' && value !== undefined && value !== value.trim()) throw new Error(`${key} must not have leading or trailing whitespace`);
+  }
   // The auth mode follows the queue backend: qstash <-> qstash, cloud/local <-> oidc (or local, checked below).
   if (!isSet(env.QP_WORKER_AUTH_MODE) && config.QP_QUEUE_ADAPTER === 'qstash') config.QP_WORKER_AUTH_MODE = 'qstash';
   if (config.QP_WORKER_AUTH_MODE === 'local' && (config.QP_ENV === 'production' || config.QP_QUEUE_ADAPTER !== 'local'

@@ -18,14 +18,16 @@ export type WorkerDependencies = {
  * retry lands when it can change something instead of at QStash's default backoff (about 12 s, then 154 s),
  * and every retry costs a message of the free daily budget. Only the header is new: when the worker answers
  * 409/503 and what it does with the job is unchanged.
- * - 409 (lease held by another delivery, or this delivery was fenced): the holder's lease lasts LEASE_MS, so
- *   an earlier retry would meet the same lease.
- * - 503 (transient processing failure, or Firestore unavailable): the request's own retry watchdog is
- *   RETRY_WATCHDOG_MS away, so the reconciler already covers the sooner case; this keeps both from firing together.
+ * - 409 (lease held by another delivery, or this delivery was fenced): equals LEASE_MS (60 s), the holder's
+ *   lease, so an earlier retry would meet the same lease.
+ * - 503 (transient processing failure, or Firestore unavailable): equals RETRY_WATCHDOG_MS (300 s). It is not
+ *   derived from QStash or from the reconciler's cadence; it only reuses the request's own watchdog interval.
  */
 export const RETRY_AFTER_SECONDS = { 409: LEASE_MS / 1000, 503: RETRY_WATCHDOG_MS / 1000 } as const;
 const headerValue = (value: string | string[] | undefined) => typeof value === 'string' ? value : undefined;
 const isInternal = (path: string | undefined) => path === WORKER_TASKS_PATH || path === WORKER_RECONCILE_PATH;
+/** Routes that never go through the bearer check: probes everywhere, and under a delivery verifier the two routes that verify by signature. */
+const OPEN_PATHS: readonly string[] = ['/health', '/ready'];
 const taskCounter = (value: unknown) => typeof value === 'string' && /^\d{1,9}$/.test(value) ? Number(value) : undefined;
 
 export function buildWorkerApp(deps: WorkerDependencies) {
@@ -41,11 +43,21 @@ export function buildWorkerApp(deps: WorkerDependencies) {
   app.addHook('onRequest', async (request, reply) => {
     reply.header('x-correlation-id', request.id).header('cache-control', 'no-store');
     const path = request.routeOptions.url;
-    if (path === '/ready' || path === '/health' || delivery) return;
+    // An allow-list, not a mode switch: in delivery mode only the probes and the two signature-verified routes
+    // skip this hook; any other route (or an unmatched one) falls through to the bearer check, which a delivery verifier never accepts.
+    if (path !== undefined && (OPEN_PATHS.includes(path) || (delivery && isInternal(path)))) return;
     const caller = path === WORKER_RECONCILE_PATH ? 'scheduler' : 'tasks';
     if (!await deps.verifier.verify(request.headers.authorization, caller)) return reply.code(403).send({ code: 'FORBIDDEN' });
   });
+  // Requests whose signature has been verified; an error on an internal route before this point is unauthenticated by definition.
+  const verified = new WeakSet<FastifyRequest>();
   app.setErrorHandler((error, request, reply) => {
+    if (delivery && isInternal(request.routeOptions.url) && !verified.has(request)) {
+      // Content-type, body-limit and Content-Length failures fire before `preValidation` can verify anything. An
+      // unsigned (or unverifiable) request must not learn anything from the status: 401, like every other rejection.
+      request.log.warn({ code: 'CALLER_REJECTED', reason: 'BAD_FORMAT', caller: request.routeOptions.url === WORKER_RECONCILE_PATH ? 'scheduler' : 'tasks' }, 'Caller verification failed');
+      return reply.code(delivery.rejectStatus).send({ code: 'UNAUTHENTICATED' });
+    }
     const statusCode = error !== null && typeof error === 'object' && 'statusCode' in error ? error.statusCode : undefined;
     const invalid = error instanceof Error && ('validation' in error
       || (typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500));
@@ -78,6 +90,7 @@ export function buildWorkerApp(deps: WorkerDependencies) {
           request.log.warn({ code: 'CALLER_REJECTED', reason: outcome.reason, caller }, 'Caller verification failed');
           return reply.code(delivery.rejectStatus).send({ code: 'UNAUTHENTICATED' });
         }
+        verified.add(request);
         request.body = parse && raw.length > 0 ? await parseJson(request, raw.toString('utf8')) : undefined;
       } });
     }

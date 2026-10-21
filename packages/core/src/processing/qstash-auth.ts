@@ -55,7 +55,8 @@ export class QStashCallerVerifier {
     private readonly clock: Clock = { now: () => Date.now() }) {
     const { QSTASH_CURRENT_SIGNING_KEY: current, QSTASH_NEXT_SIGNING_KEY: next, QP_WORKER_URL: origin } = config;
     // Constant messages: a value here could be a signing key.
-    if (!current?.trim() || !next?.trim()) throw new Error('QStash signing keys required');
+    // loadConfig already rejects surrounding whitespace; repeated here because the HMAC uses the key exactly as given.
+    if (!current?.trim() || !next?.trim() || current !== current.trim() || next !== next.trim()) throw new Error('QStash signing keys required');
     if (!URL.canParse(origin) || new URL(origin).origin !== origin) throw new Error('Worker URL must be an origin');
     this.#keys = [current, next];
     // Built from configuration only, never from Host or X-Forwarded-* (a client could forge those).
@@ -77,6 +78,8 @@ export class QStashCallerVerifier {
     if (header === undefined || payload === undefined) return reject('BAD_FORMAT');
     // Only HS256: `none` and every other algorithm are refused before any key is touched.
     if (header.alg !== 'HS256') return reject('BAD_FORMAT');
+    // RFC 7515 4.1.11: a recipient must reject a token whose `crit` extensions it does not understand, and it understands none.
+    if (Object.hasOwn(header, 'crit')) return reject('BAD_FORMAT');
 
     const signature = Buffer.from(encodedSignature, 'base64url');
     const signingInput = `${encodedHeader}.${encodedPayload}`;
@@ -89,6 +92,8 @@ export class QStashCallerVerifier {
     if (payload.iss !== 'Upstash' || payload.sub !== this.subjects[caller]) return reject('BAD_CLAIM');
     const nowSeconds = this.clock.now() / 1000;
     const { exp, nbf } = payload;
+    // `exp` has no upper bound on purpose: only the holder of a signing key can mint a token, and such a holder
+    // can already do anything a long-lived token allows. Non-finite values (JSON `1e999` parses to Infinity) are rejected.
     if (typeof exp !== 'number' || !Number.isFinite(exp)) return reject('BAD_CLAIM');
     if (nbf !== undefined && (typeof nbf !== 'number' || !Number.isFinite(nbf))) return reject('BAD_CLAIM');
     // `EXPIRED` covers the whole validity window: past exp, or before nbf.

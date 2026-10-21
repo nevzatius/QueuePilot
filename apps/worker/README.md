@@ -34,14 +34,19 @@ QStash configuration (ADR-019 free profile; the `QStashQueue` adapter publishes 
 
 With `QP_WORKER_AUTH_MODE=qstash` both `POST /internal/tasks` and `POST /internal/reconcile` (the QStash schedule tick)
 require an `Upstash-Signature` JWT. `createCallerVerifier` builds it before any SDK client or Firestore access.
-- Algorithm HS256 only (`none` and every other `alg` are refused), HMAC over `header.payload` with the current
-  signing key, then the next one (rotation), compared in constant time. The keys are used as UTF-8 text.
+- Algorithm HS256 only (`none` and every other `alg` are refused, and so is a header with `crit`), HMAC over `header.payload` with the current
+  signing key, then the next one (rotation), compared in constant time. The keys are used as UTF-8 text, exactly as configured.
 - Claims: `iss` is `Upstash`; `sub` equals `QP_WORKER_URL` + the route path exactly (`/internal/tasks` or
   `/internal/reconcile`, each route its own), never derived from `Host` or `X-Forwarded-*`; `exp` is required and
   `nbf` enforced when present, with a 30 s clock tolerance (`QSTASH_CLOCK_TOLERANCE_SECONDS`); `body` equals the
   base64url SHA-256 of the exact raw bytes received (empty body hashes as the empty string; a trailing `=` is tolerated, as in QStash's SDK).
 - The raw body is kept for these two routes only (an encapsulated Fastify scope with a buffer content-type parser
   for every content type); the JSON is parsed after verification, so an unsigned request gets 401 even with a malformed body.
+  Failures that fire before verification can run (an invalid `Content-Type`, a body over the 4096-byte limit, a `Content-Length`
+  that does not match the body) are mapped to the same 401 in the error handler, logged as `CALLER_REJECTED` / `BAD_FORMAT`; a
+  signed request that fails this way is also 401, because its signature cannot be checked.
+- In this mode only `/health`, `/ready` and the two routes above skip the bearer check; any other route is refused (403).
+- Signing keys must not have leading or trailing whitespace (config error naming only the variable): the HMAC uses them as given.
 - Every failure answers `401 {"code":"UNAUTHENTICATED"}`. The log line carries only `CALLER_REJECTED` and a code
   (`MISSING_HEADER`, `BAD_FORMAT`, `BAD_SIGNATURE`, `BAD_CLAIM`, `EXPIRED`, `BODY_MISMATCH`), never the token, a key or a claim value.
   The OIDC path keeps answering 403.
