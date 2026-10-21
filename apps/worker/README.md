@@ -20,14 +20,35 @@ without trailing slash), `QP_TASKS_OIDC_AUDIENCE` (same origin), `QP_TASKS_INVOK
 local auth, emulator overrides and **any** `QP_FAULT_*` environment variable, even `false`.
 It refuses to start if cloud/OIDC configuration is incomplete.
 
-QStash configuration (ADR-019 free profile; the `QStashQueue` adapter publishes to QStash, the worker signature verifier lands in B9-3):
+QStash configuration (ADR-019 free profile; the `QStashQueue` adapter publishes to QStash, the worker verifies its calls by signature, see below):
 - `QP_QUEUE_ADAPTER=qstash`: select the QStash backend (`local` | `cloud` | `qstash`).
 - `QSTASH_TOKEN`: secret, publish token for the QStash API.
-- `QSTASH_CURRENT_SIGNING_KEY` / `QSTASH_NEXT_SIGNING_KEY`: secrets, both accepted by the worker signature verifier (B9-3) so key rotation never drops deliveries.
-- `QP_WORKER_URL`: public worker origin QStash calls (must be `https` in production). Shared with the other backends.
+- `QSTASH_CURRENT_SIGNING_KEY` / `QSTASH_NEXT_SIGNING_KEY`: secrets, both accepted by the worker signature verifier so key rotation never drops deliveries.
+- `QP_WORKER_URL`: the PUBLIC worker origin QStash calls (must be `https` in production; no path, no trailing slash). Shared with the other backends. Under qstash it is also what the verifier compares the token's `sub` with, so it must be the exact origin QStash was given, not an internal Render hostname.
+- `QP_WORKER_AUTH_MODE`: `oidc` | `local` | `qstash`. Defaults to `qstash` under the qstash adapter and `oidc` otherwise. Production requires the mode that matches the adapter (cloud -> `oidc`, qstash -> `qstash`); a mismatch in any environment fails with a constant message, and `local` stays rejected in production. `QP_TASKS_OIDC_AUDIENCE`, `QP_TASKS_INVOKER_SA` and `QP_SCHEDULER_SA` are not needed under qstash and are rejected in production as mixed configuration.
 - `QP_QSTASH_RETRIES`: delivery retries, integer 0-3, default 2.
 - `QSTASH_URL`: optional QStash API origin, default `https://qstash.upstash.io`. QStash tokens are regional, so use the URL shown next to your token (for example `https://qstash-eu-central-1.upstash.io`). Must be an `https` origin (no path, query, credentials or trailing slash). Not a secret, but it is a QStash-only setting: Cloud Tasks production rejects it as mixed configuration. Verify in B9-9 that the region matches the token.
 - `QP_QSTASH_TIMEOUT`: per-delivery timeout as a Go duration WITH a unit (`90s`, `1m30s`), default `90s`, and must be between 60 s and 15 min inclusive. A bare number is rejected because QStash answers 400. The lower bound covers a Render free cold start (about 8-14 s measured, up to about 50 s per Render docs) plus processing.
+
+### QStash caller verification (B9-3)
+
+With `QP_WORKER_AUTH_MODE=qstash` both `POST /internal/tasks` and `POST /internal/reconcile` (the QStash schedule tick)
+require an `Upstash-Signature` JWT. `createCallerVerifier` builds it before any SDK client or Firestore access.
+- Algorithm HS256 only (`none` and every other `alg` are refused), HMAC over `header.payload` with the current
+  signing key, then the next one (rotation), compared in constant time. The keys are used as UTF-8 text.
+- Claims: `iss` is `Upstash`; `sub` equals `QP_WORKER_URL` + the route path exactly (`/internal/tasks` or
+  `/internal/reconcile`, each route its own), never derived from `Host` or `X-Forwarded-*`; `exp` is required and
+  `nbf` enforced when present, with a 30 s clock tolerance (`QSTASH_CLOCK_TOLERANCE_SECONDS`); `body` equals the
+  base64url SHA-256 of the exact raw bytes received (empty body hashes as the empty string; a trailing `=` is tolerated, as in QStash's SDK).
+- The raw body is kept for these two routes only (an encapsulated Fastify scope with a buffer content-type parser
+  for every content type); the JSON is parsed after verification, so an unsigned request gets 401 even with a malformed body.
+- Every failure answers `401 {"code":"UNAUTHENTICATED"}`. The log line carries only `CALLER_REJECTED` and a code
+  (`MISSING_HEADER`, `BAD_FORMAT`, `BAD_SIGNATURE`, `BAD_CLAIM`, `EXPIRED`, `BODY_MISMATCH`), never the token, a key or a claim value.
+  The OIDC path keeps answering 403.
+- `jti` is not tracked: a replay is absorbed by idempotency and leases (ADR-017).
+- `Retry-After` (seconds) is sent on every 409 and 503 answer from the two internal routes (both auth modes): 60 on
+  409 (`LEASE_MS`, the holder's lease), 300 on 503 (`RETRY_WATCHDOG_MS`). QStash honoured it in the ADR-019 spike.
+  `Upstash-Retried` is not read yet.
 
 In the free profile all secrets (`QSTASH_*`, `REDIS_URL`) live as Render secret environment variables; there is no Secret Manager.
 Production rejects the local queue, missing or blank QStash settings, a non-HTTPS worker URL, and mixed settings
