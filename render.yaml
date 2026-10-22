@@ -1,0 +1,99 @@
+# Render Blueprint for the free-tier deployment (ADR-019). Read docs/DEPLOYMENT_RUNBOOK.md, "Free-tier path", first.
+#
+# Free plan only: two web services, no disk, no database, no cron job, no background worker (those are paid).
+# autoDeploy is off: nothing deploys until the owner clicks "Manual Deploy". No value below is a secret or a real
+# URL: every owner-specific value is declared with `sync: false`, which makes Render ask for it in the dashboard
+# when the Blueprint is created. Never type a secret into this file, a chat or a commit.
+#
+# PORT is injected by Render and read by both apps, which listen on 0.0.0.0. It is deliberately not set here.
+# QP_REGION and every Cloud Tasks setting are left out on purpose: the qstash backend rejects them (B9-1 guard).
+#
+# Circularity (document: DEPLOYMENT_RUNBOOK, step "Set the two URLs"): the API publishes tasks to the worker and the
+# worker checks that the QStash JWT `sub` equals QP_WORKER_URL + path, so BOTH services need the worker's public
+# origin, which Render only reveals after the first deploy. Enter the expected https://queuepilot-worker.onrender.com
+# at the prompt, compare it with the real URL in the dashboard, and correct both services if they differ.
+services:
+  - type: web
+    name: queuepilot-api
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: false
+    envVars:
+      - key: QP_ENV
+        value: production
+      - key: QP_QUEUE_ADAPTER
+        value: qstash
+      - key: QP_WORKER_AUTH_MODE
+        value: qstash
+      # Render appends three addresses to X-Forwarded-For (ADR-019 Evidence); the API trusts exactly that many hops.
+      - key: TRUST_PROXY_HOPS
+        value: "3"
+      # One free instance: the per-instance rate-limit fallback must not assume five.
+      - key: QP_MAX_INSTANCES
+        value: "1"
+      - key: QP_QSTASH_RETRIES
+        value: "2"
+      - key: QP_QSTASH_TIMEOUT
+        value: 90s
+      # Owner-specific, not secret: Firebase project id, worker origin, Hosting origin(s), QStash region URL.
+      - key: GCLOUD_PROJECT
+        sync: false
+      - key: QP_WORKER_URL
+        sync: false
+      - key: QP_CORS_ORIGINS
+        sync: false
+      - key: QSTASH_URL
+        sync: false
+      # Secrets.
+      - key: QSTASH_TOKEN
+        sync: false
+      - key: QSTASH_CURRENT_SIGNING_KEY
+        sync: false
+      - key: QSTASH_NEXT_SIGNING_KEY
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: QP_FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+
+  - type: web
+    name: queuepilot-worker
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./apps/worker/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: false
+    envVars:
+      - key: QP_ENV
+        value: production
+      - key: QP_QUEUE_ADAPTER
+        value: qstash
+      - key: QP_WORKER_AUTH_MODE
+        value: qstash
+      - key: QP_QSTASH_RETRIES
+        value: "2"
+      - key: QP_QSTASH_TIMEOUT
+        value: 90s
+      - key: GCLOUD_PROJECT
+        sync: false
+      # The worker's own public origin: the QStash `sub` claim is built from it.
+      - key: QP_WORKER_URL
+        sync: false
+      - key: QSTASH_URL
+        sync: false
+      - key: QSTASH_TOKEN
+        sync: false
+      - key: QSTASH_CURRENT_SIGNING_KEY
+        sync: false
+      - key: QSTASH_NEXT_SIGNING_KEY
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: QP_FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false

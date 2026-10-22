@@ -1,14 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { deleteApp, initializeApp } from 'firebase-admin/app';
+import { deleteApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
-import { createCallerVerifier, createDispatchQueue, createLogger, FirestoreProcessingStore, loadConfig,
+import { createCallerVerifier, createDispatchQueue, createFirebaseApp, createLogger, FirestoreProcessingStore, loadConfig,
   LocalDispatchQueue, Reconciler, startLocalDispatch, WorkerService } from '@queuepilot/core';
 import { buildWorkerApp } from './app.js';
 
 export function createWorkerRuntime() {
   const config = loadConfig();
   const verifier = createCallerVerifier(config); // Fail closed before creating SDK clients.
-  const firebase = initializeApp({ projectId: config.GCLOUD_PROJECT }, `worker-${randomUUID()}`);
+  const firebase = createFirebaseApp(config, `worker-${randomUUID()}`);
   const db = getFirestore(firebase);
   const clock = { now: () => Date.now() };
   const log = createLogger();

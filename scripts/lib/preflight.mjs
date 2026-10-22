@@ -1,9 +1,11 @@
 import { validateConfig, specification } from '../../infra/spec.mjs';
+import { runFreePreflight } from './free-preflight.mjs';
 
 // Deterministic, local-only deployment preflight. It reads repository files and (by name only) the
 // environment. It never calls GCP, never prints environment values and can only report what is
 // verifiable offline: PASS (verified locally), FAIL (repository inconsistency), BLOCKED (a local
 // tool, artifact or configuration is missing) and NOT_RUN (external verification, not executed).
+// `--profile free` adds the free-tier checks (render.yaml, firebase.json); WARN is advisory and never changes the exit code.
 
 export const REQUIRED_FILES = [
   'apps/api/Dockerfile', 'apps/worker/Dockerfile', '.dockerignore', 'pnpm-lock.yaml', 'pnpm-workspace.yaml',
@@ -124,6 +126,8 @@ export function runPreflight(ctx) {
   // REDIS_URL matters only for local real-Redis runs; deployed services read Secret Manager instead.
   add('env-REDIS_URL', env.REDIS_URL ? 'PASS' : 'BLOCKED', `REDIS_URL is ${env.REDIS_URL ? 'set' : 'not set'} in this shell (value not shown; needed only for local real-Redis runs)`, false);
   add('cloud-secret-redis-url', 'NOT_RUN', 'Secret Manager secret redis-url and its pinned version cannot be verified locally', false);
+
+  if (args.profile === 'free') runFreePreflight(ctx, add);
 
   for (const item of NOT_RUN_ITEMS) add(`not-run:${item.split(' ')[0].toLowerCase()}`, 'NOT_RUN', item, false);
   return results;

@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { initializeApp, deleteApp } from 'firebase-admin/app';
+import { deleteApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import {
-  AdmissionControl, createDispatchQueue, createLogger, LocalDispatchQueue, startLocalDispatch, FirebaseTokenVerifier, FirestoreMembershipStore,
+  AdmissionControl, createDispatchQueue, createFirebaseApp, createLogger, LocalDispatchQueue, startLocalDispatch, FirebaseTokenVerifier, FirestoreMembershipStore,
   FirestoreRequestRepository, loadConfig, MembershipService, MemoryRateLimiter, CachedMetricsService,
   createRedisConnection, ManagedRedis, RedisMetricsCache, RedisQuotaStore, RedisRateLimiter, FirestoreQuotaSubmission,
 } from '@queuepilot/core';
@@ -11,7 +11,7 @@ import { buildApp } from './app.js';
 
 export function createRuntime() {
   const config = loadConfig();
-  const firebase = initializeApp({ projectId: config.GCLOUD_PROJECT }, `api-${randomUUID()}`);
+  const firebase = createFirebaseApp(config, `api-${randomUUID()}`);
   const db = getFirestore(firebase);
   const clock = { now: () => Date.now() };
   const requests = new FirestoreRequestRepository(db, clock);
