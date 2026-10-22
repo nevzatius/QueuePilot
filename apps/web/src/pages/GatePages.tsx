@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { useSession } from '../auth/SessionContext';
 import { config } from '../config';
+import type { ApiBaseUrlProblem } from '../config';
 import { t } from '../i18n';
 import { ErrorNotice, Spinner, buttonClass } from '../components/ui';
 
@@ -85,6 +86,14 @@ export function SessionErrorPage() {
       <button type="button" onClick={() => void signOut()} className={buttonClass('secondary')}>
         {t('auth.signOut')}
       </button>
+    </Centered>
+  );
+}
+
+export function ConfigErrorPage({ problem }: { problem: ApiBaseUrlProblem }) {
+  return (
+    <Centered title={t('config.title')}>
+      <p role="alert">{t(`config.${problem}`)}</p>
     </Centered>
   );
 }

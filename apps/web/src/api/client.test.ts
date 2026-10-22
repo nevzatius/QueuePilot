@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createProblem } from '@queuepilot/contracts';
 import { ApiError, createApiClient } from './client';
+import { RETRY_BUDGET_MS } from './coldStart';
 
 const REQUEST_ID = '3f2b8a4e-1c5d-4e7a-9b6f-0a1b2c3d4e5f';
 
@@ -71,9 +72,16 @@ describe('api client', () => {
     expect(onUnauthenticated).toHaveBeenCalledOnce();
   });
 
-  it('reports network failures without a status', async () => {
-    const { client } = setup(() => Promise.reject(new TypeError('failed to fetch')));
-    await expect(client.me()).rejects.toMatchObject({ kind: 'network', status: null, code: null });
+  it('reports network failures without a status once the retry budget is spent', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client } = setup(() => Promise.reject(new TypeError('failed to fetch')));
+      const result = client.me().catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(RETRY_BUDGET_MS * 2);
+      await expect(result).resolves.toMatchObject({ kind: 'network', status: null, code: null });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('rejects responses that violate the contract', async () => {
@@ -82,7 +90,7 @@ describe('api client', () => {
   });
 
   it('treats a non-problem error body as unexpected', async () => {
-    const { client } = setup(() => new Response('<html>bad gateway</html>', { status: 502 }));
-    await expect(client.me()).rejects.toMatchObject({ kind: 'unexpected', status: 502, code: null });
+    const { client } = setup(() => new Response('<html>not found</html>', { status: 404 }));
+    await expect(client.me()).rejects.toMatchObject({ kind: 'unexpected', status: 404, code: null });
   });
 });

@@ -5,6 +5,7 @@ import { App } from './App';
 import type { AuthAdapter } from './auth/AuthContext';
 import { createFirebaseAdapter } from './auth/firebaseAdapter';
 import { config } from './config';
+import { ConfigErrorPage } from './pages/GatePages';
 import './index.css';
 
 /** Used when Firebase config is missing: the login page explains why sign-in is unavailable. */
@@ -32,9 +33,13 @@ async function start() {
   if (!container) throw new Error('Missing #root');
   createRoot(container).render(
     <StrictMode>
-      <BrowserRouter>
-        <App {...props} />
-      </BrowserRouter>
+      {config.configError ? (
+        <ConfigErrorPage problem={config.configError} />
+      ) : (
+        <BrowserRouter>
+          <App {...props} />
+        </BrowserRouter>
+      )}
     </StrictMode>,
   );
 }

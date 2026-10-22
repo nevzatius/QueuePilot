@@ -21,6 +21,14 @@ import {
   type ProblemDetails,
   type RequestDetail,
 } from '@queuepilot/contracts';
+import {
+  ATTEMPT_TIMEOUT_MS,
+  PLATFORM_UNAVAILABLE_STATUSES,
+  RETRY_BACKOFF_MAX_MS,
+  RETRY_BACKOFF_START_MS,
+  RETRY_BUDGET_MS,
+  SLOW_RESPONSE_NOTICE_MS,
+} from './coldStart';
 
 /** Failure of an API call. `problem` is set when the server answered with Problem Details. */
 export class ApiError extends Error {
@@ -74,54 +82,108 @@ export interface ApiClientOptions {
   fetchImpl?: typeof fetch;
   /** Called when the server answers 401, so the app can end the session. */
   onUnauthenticated?: () => void;
+  /** True while any call is slow or being retried after a cold-start style failure; false when none is. */
+  onWakingChange?: (waking: boolean) => void;
 }
 
 export function createApiClient(options: ApiClientOptions): ApiClient {
   const doFetch = options.fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
+  const baseUrl = options.baseUrl.replace(/\/+$/, '');
+
+  // Calls that currently show the waking notice; the callback fires only when the set becomes (non-)empty.
+  const waking = new Set<symbol>();
+  function setWaking(id: symbol, on: boolean) {
+    const before = waking.size > 0;
+    if (on) waking.add(id);
+    else waking.delete(id);
+    const after = waking.size > 0;
+    if (before !== after) options.onWakingChange?.(after);
+  }
+
+  type Attempt =
+    | { kind: 'response'; res: Response; raw: unknown }
+    | { kind: 'transient'; error: ApiError };
+
+  async function attempt(url: string, init: RequestInit): Promise<Attempt> {
+    // Credentials are never sent: auth is the bearer token and the API forbids credentialed CORS.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS);
+    try {
+      let res: Response;
+      try {
+        res = await doFetch(url, { ...init, mode: 'cors', credentials: 'omit', signal: controller.signal });
+      } catch {
+        return { kind: 'transient', error: new ApiError('network', null, null, 'Network error') };
+      }
+      const raw: unknown = await res.json().catch(() => undefined);
+      // A platform proxy answers 502/503/504 with HTML while the service sleeps; an API answer is Problem Details
+      // and is final (for example QUOTA_UNAVAILABLE), so it is never mistaken for a wake-up.
+      if (PLATFORM_UNAVAILABLE_STATUSES.has(res.status) && !ProblemDetailsSchema.safeParse(raw).success) {
+        return { kind: 'transient', error: new ApiError('unexpected', res.status, null, `HTTP ${res.status}`) };
+      }
+      return { kind: 'response', res, raw };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   async function call<S extends z.ZodType>(
     path: string,
     schema: S,
     init: { method?: string; body?: unknown; headers?: Record<string, string> } = {},
   ): Promise<{ data: z.output<S>; headers: Headers }> {
-    let token: string;
+    const method = init.method ?? 'GET';
+    // Retrying is safe for reads, and for writes only when the same Idempotency-Key is sent again, which the server
+    // answers with the original result. A write without a key (bootstrap) is never retried.
+    const canRetry = method === 'GET' || init.headers?.[HEADERS.idempotencyKey] !== undefined;
+    const id = Symbol(path);
+    const slowTimer = setTimeout(() => setWaking(id, true), SLOW_RESPONSE_NOTICE_MS);
+    const started = Date.now();
+    let backoff = RETRY_BACKOFF_START_MS;
     try {
-      token = await options.getToken();
-    } catch {
-      options.onUnauthenticated?.();
-      throw new ApiError('problem', 401, null, 'No ID token available');
-    }
-    const headers: Record<string, string> = {
-      accept: 'application/json',
-      authorization: `Bearer ${token}`,
-      ...init.headers,
-    };
-    if (init.body !== undefined) headers['content-type'] = 'application/json';
+      for (;;) {
+        let token: string;
+        try {
+          token = await options.getToken();
+        } catch {
+          options.onUnauthenticated?.();
+          throw new ApiError('problem', 401, null, 'No ID token available');
+        }
+        const headers: Record<string, string> = {
+          accept: 'application/json',
+          authorization: `Bearer ${token}`,
+          ...init.headers,
+        };
+        if (init.body !== undefined) headers['content-type'] = 'application/json';
 
-    let res: Response;
-    try {
-      res = await doFetch(`${options.baseUrl}${path}`, {
-        method: init.method ?? 'GET',
-        headers,
-        ...(init.body !== undefined && { body: JSON.stringify(init.body) }),
-      });
-    } catch {
-      throw new ApiError('network', null, null, 'Network error');
-    }
+        const outcome = await attempt(`${baseUrl}${path}`, {
+          method,
+          headers,
+          ...(init.body !== undefined && { body: JSON.stringify(init.body) }),
+        });
+        if (outcome.kind === 'transient') {
+          if (!canRetry || Date.now() - started + backoff > RETRY_BUDGET_MS) throw outcome.error;
+          setWaking(id, true);
+          await new Promise((resolve) => setTimeout(resolve, backoff));
+          backoff = Math.min(backoff * 2, RETRY_BACKOFF_MAX_MS);
+          continue;
+        }
 
-    const raw: unknown = await res.json().catch(() => undefined);
-    if (!res.ok) {
-      const problem = ProblemDetailsSchema.safeParse(raw);
-      if (problem.success) {
-        if (res.status === 401) options.onUnauthenticated?.();
-        throw new ApiError('problem', res.status, problem.data, problem.data.title);
+        const { res, raw } = outcome;
+        if (!res.ok) {
+          const problem = ProblemDetailsSchema.safeParse(raw);
+          if (res.status === 401) options.onUnauthenticated?.();
+          if (problem.success) throw new ApiError('problem', res.status, problem.data, problem.data.title);
+          throw new ApiError('unexpected', res.status, null, `HTTP ${res.status}`);
+        }
+        const parsed = schema.safeParse(raw);
+        if (!parsed.success) throw new ApiError('unexpected', res.status, null, 'Response does not match the contract');
+        return { data: parsed.data as z.output<S>, headers: res.headers };
       }
-      if (res.status === 401) options.onUnauthenticated?.();
-      throw new ApiError('unexpected', res.status, null, `HTTP ${res.status}`);
+    } finally {
+      clearTimeout(slowTimer);
+      setWaking(id, false);
     }
-    const parsed = schema.safeParse(raw);
-    if (!parsed.success) throw new ApiError('unexpected', res.status, null, 'Response does not match the contract');
-    return { data: parsed.data as z.output<S>, headers: res.headers };
   }
 
   return {
