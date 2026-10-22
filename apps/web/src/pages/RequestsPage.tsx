@@ -9,7 +9,8 @@ import { t, tDynamic } from '../i18n';
 import { formatDateTime } from '../lib/format';
 import { useResource } from '../lib/useResource';
 
-export const POLL_INTERVAL_MS = 5000;
+/** ADR-019: 30 s protects the free Firestore read budget (50K reads/day). `useResource` already pauses while the tab is hidden. */
+export const POLL_INTERVAL_MS = 30_000;
 const PAGE_SIZE = 20;
 
 export function RequestsPage() {

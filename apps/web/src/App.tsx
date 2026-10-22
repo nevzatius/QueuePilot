@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { ApiProvider } from './api/ApiContext';
 import { createApiClient, type ApiClient } from './api/client';
@@ -35,6 +35,7 @@ export function App({ adapter, createClient }: AppProps) {
 
 function AuthGate({ adapter, createClient }: AppProps) {
   const { status, user, signOut } = useAuth();
+  const [waking, setWaking] = useState(false);
   // A new client per signed-in user, so no state leaks between accounts.
   const uid = user?.uid ?? null;
   const client = useMemo(
@@ -46,6 +47,7 @@ function AuthGate({ adapter, createClient }: AppProps) {
             baseUrl: config.apiBaseUrl,
             getToken: () => adapter.getIdToken(),
             onUnauthenticated: () => void signOut(),
+            onWakingChange: setWaking,
           })),
     [uid, adapter, createClient],
   );
@@ -54,10 +56,20 @@ function AuthGate({ adapter, createClient }: AppProps) {
   if (status === 'signedOut' || !client) return <LoginPage />;
   return (
     <ApiProvider client={client}>
+      {waking && <WakingNotice />}
       <SessionProvider key={uid}>
         <SessionGate />
       </SessionProvider>
     </ApiProvider>
+  );
+}
+
+/** Calm, non-blocking notice while the free-tier API wakes up (see api/coldStart.ts). */
+export function WakingNotice() {
+  return (
+    <div role="status" className="fixed inset-x-0 top-0 z-50 border-b border-amber-300 bg-amber-50 px-4 py-2 text-center text-sm text-amber-900">
+      {t('wake.notice')}
+    </div>
   );
 }
 
