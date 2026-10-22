@@ -1,5 +1,6 @@
 import { Redis } from 'ioredis';
 import type { Clock } from '@queuepilot/domain';
+import { REDIS_CONNECT_TIMEOUT_DEFAULT_MS } from '../config.js';
 
 /** Only this boundary knows about ioredis. Never propagate dependency errors or URLs. */
 export interface RedisConnection {
@@ -21,11 +22,14 @@ export class RedisUnavailable extends Error {
   constructor() { super('Redis unavailable'); }
 }
 
-export function createRedisConnection(url: string): RedisConnection {
+/** Per command, after the connection is ready. Measured about 2 ms on Upstash free (ADR-019 spike). */
+export const REDIS_COMMAND_TIMEOUT_MS = 100;
+
+export function createRedisConnection(url: string, connectTimeoutMs = REDIS_CONNECT_TIMEOUT_DEFAULT_MS): RedisConnection {
   let client: Redis;
   try {
     client = new Redis(url, {
-      lazyConnect: true, commandTimeout: 100, connectTimeout: 100,
+      lazyConnect: true, commandTimeout: REDIS_COMMAND_TIMEOUT_MS, connectTimeout: connectTimeoutMs,
       maxRetriesPerRequest: 0, retryStrategy: () => null,
       enableOfflineQueue: false, autoResendUnfulfilledCommands: false,
     });
@@ -42,7 +46,19 @@ export class ManagedRedis implements RedisAccess {
   private probing = false;
   private closed = false;
   private connecting: Promise<unknown> | undefined;
-  constructor(private readonly client: RedisConnection | undefined, private readonly clock: Clock) {}
+  constructor(private readonly client: RedisConnection | undefined, private readonly clock: Clock,
+    private readonly connectTimeoutMs = REDIS_CONNECT_TIMEOUT_DEFAULT_MS) {}
+
+  /**
+   * Starts connecting in the background so the first request does not pay the cold connect (about 400 ms on
+   * Upstash free). Never throws and never records a failure: a failed warm-up changes nothing, and the next
+   * request connects (or fails closed) on its own deadline exactly as without a warm-up.
+   */
+  async warm(): Promise<void> {
+    const client = this.client;
+    if (!client || this.closed || client.status === 'ready') return;
+    try { await this.connect(client); } catch { /* The connection's own connectTimeout bounds this; requests re-try. */ }
+  }
 
   eval(script: string, keys: string[], args: string[]) {
     return this.execute((client) => client.eval(script, keys.length, ...keys, ...args));
@@ -56,7 +72,7 @@ export class ManagedRedis implements RedisAccess {
     const client = this.client;
     if (!client) return;
     try {
-      if (client.status === 'ready') await deadline(() => client.quit());
+      if (client.status === 'ready') await deadline(() => client.quit(), REDIS_COMMAND_TIMEOUT_MS);
     } catch { /* Shutdown is bounded even on a broken socket. */ }
     finally { client.disconnect(); }
   }
@@ -65,26 +81,16 @@ export class ManagedRedis implements RedisAccess {
     if (!client || this.closed || this.clock.now() < this.openUntil || this.probing) throw new RedisUnavailable();
     const probe = this.failures >= 5;
     if (probe) this.probing = true;
-    let abandoned = false;
     try {
-      const value = await deadline(async () => {
-        if (client.status !== 'ready') {
-          if (!this.connecting) {
-            const connecting = client.connect();
-            this.connecting = connecting;
-            const clear = () => { if (this.connecting === connecting) this.connecting = undefined; };
-            void connecting.then(clear, clear);
-          }
-          await this.connecting;
-        }
-        if (abandoned || this.closed) throw new RedisUnavailable();
-        return command(client);
-      });
+      // Two budgets, so a cold connect (about 400 ms) does not eat the command's 100 ms; a command still gets
+      // the full REDIS_COMMAND_TIMEOUT_MS. A request that cannot connect fails closed after connectTimeoutMs.
+      if (client.status !== 'ready') await deadline(() => this.connect(client), this.connectTimeoutMs);
+      if (this.closed) throw new RedisUnavailable();
+      const value = await deadline(() => command(client), REDIS_COMMAND_TIMEOUT_MS);
       this.failures = 0;
       this.openUntil = 0;
       return value;
     } catch {
-      abandoned = true;
       this.failures++;
       if (this.failures >= 5) this.openUntil = this.clock.now() + 30_000;
       // Do not resend timed-out commands: their outcome may be unknown.
@@ -93,13 +99,23 @@ export class ManagedRedis implements RedisAccess {
       throw new RedisUnavailable();
     } finally { if (probe) this.probing = false; }
   }
+  /** One connect attempt at a time; callers (requests, the warm-up) share it. */
+  private connect(client: RedisConnection): Promise<unknown> {
+    if (!this.connecting) {
+      const connecting = client.connect();
+      this.connecting = connecting;
+      const clear = () => { if (this.connecting === connecting) this.connecting = undefined; };
+      void connecting.then(clear, clear);
+    }
+    return this.connecting;
+  }
 }
 
-async function deadline<T>(operation: () => Promise<T>): Promise<T> {
+async function deadline<T>(operation: () => Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([operation(), new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new RedisUnavailable()), 100);
+      timer = setTimeout(() => reject(new RedisUnavailable()), ms);
     })]);
   } finally { clearTimeout(timer); }
 }

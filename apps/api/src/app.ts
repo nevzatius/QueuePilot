@@ -13,6 +13,8 @@ import {
   AdmissionControl, ApiError, bearerToken, enqueueAccepted, logOptions, MemoryRateLimiter,
   MetricsService, problemDetails, unavailableQuota,
 } from '@queuepilot/core';
+import { corsHook } from './cors.js';
+import { dropShortForwardedChain, trustProxyHops } from './proxy.js';
 import type { Config, MembershipService, QuotaStore, QuotaSubmitter, RateLimiter, QueuePort, RequestRepository, Tenant, TokenVerifier } from '@queuepilot/core';
 
 declare module 'fastify' {
@@ -33,7 +35,7 @@ export function buildApp(deps: AppDependencies) {
   const app = Fastify({
     logger: deps.logger === false ? false : logOptions,
     logController: new LogController({ requestIdLogLabel: 'correlationId' }), genReqId: () => randomUUID(),
-    bodyLimit: 32 * 1024, trustProxy: false,
+    bodyLimit: 32 * 1024, trustProxy: trustProxyHops(deps.config.TRUST_PROXY_HOPS),
   }).withTypeProvider<ZodTypeProvider>();
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
@@ -41,6 +43,9 @@ export function buildApp(deps: AppDependencies) {
   app.decorateRequest('access');
   const bootstrapLimiter = deps.bootstrapLimiter ?? new MemoryRateLimiter({ now: () => Date.now() }, 1);
 
+  // Order matters: the proxy guard runs before anything reads request.ip, CORS answers preflights before authentication.
+  app.addHook('onRequest', dropShortForwardedChain(deps.config.TRUST_PROXY_HOPS));
+  app.addHook('onRequest', corsHook(deps.config.QP_CORS_ORIGINS));
   app.addHook('onRequest', async (request, reply) => {
     reply.header('x-correlation-id', request.id).header('cache-control', 'no-store');
     if (request.routeOptions.config.public) return;

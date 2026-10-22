@@ -38,6 +38,28 @@ export function isHttpsOrigin(value: string): boolean {
 export function isQStashTimeout(value: string): boolean {
   return GO_DURATION.test(value) && withinTimeoutBounds(value);
 }
+/**
+ * Redis connect timeout bounds (QP_REDIS_CONNECT_TIMEOUT_MS). Measured on Upstash free (ADR-019 spike, small
+ * sample): cold TCP/TLS connect about 404 ms, warm 24-40 ms, commands about 2 ms. The old fixed 100 ms made every
+ * cold start fail closed. Default 1500 ms is about 3.7x the cold measurement and keeps the worst Redis-down
+ * request (rate limiter, then quota, each connect + 100 ms command) near 3.2 s, well inside the 15 s API timeout.
+ * Max 3000 ms keeps that worst case near 6.2 s. Min 100 ms is the previous value.
+ */
+export const REDIS_CONNECT_TIMEOUT_DEFAULT_MS = 1500;
+export const REDIS_CONNECT_TIMEOUT_MIN_MS = 100;
+export const REDIS_CONNECT_TIMEOUT_MAX_MS = 3000;
+/** More entries than any deployment needs; a long list is a misconfiguration. */
+export const CORS_ORIGINS_MAX = 10;
+/** Exact development origins; any port. Never accepted in production. */
+const LOCAL_ORIGIN_HOSTS = ['localhost', '127.0.0.1'];
+/** A CORS entry: an exact https origin, or (outside production) an exact http://localhost or http://127.0.0.1 origin. */
+export function isCorsOrigin(value: string, production: boolean): boolean {
+  if (value.includes('*') || !URL.canParse(value)) return false;
+  const url = new URL(value);
+  if (url.origin !== value) return false;
+  if (url.protocol === 'https:') return true;
+  return !production && url.protocol === 'http:' && LOCAL_ORIGIN_HOSTS.includes(url.hostname);
+}
 const CLOUD_TASKS_VARS = ['QP_TASKS_INVOKER_SA', 'QP_TASKS_OIDC_AUDIENCE', 'QP_SCHEDULER_SA', 'QP_REGION', 'QP_TASKS_QUEUE'] as const;
 /** Config keys whose values are credentials. Never log, dump or put them in an error. */
 export const SECRET_CONFIG_KEYS = [...QSTASH_VARS, 'REDIS_URL'] as const;
@@ -67,6 +89,12 @@ const ConfigSchema = z.object({
   REDIS_URL: z.url().refine((value) => URL.canParse(value) && ['redis:', 'rediss:'].includes(new URL(value).protocol)).default('redis://127.0.0.1:6379'),
   QP_REDIS_ENABLED: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
   QP_QUOTA_FAILURE_MODE: z.enum(['closed', 'open']).default('closed'),
+  // Strict digit regexes, not z.coerce: '', 'true', ' 3' and '1e3' must not turn into numbers. Range checks live in loadConfig.
+  QP_REDIS_CONNECT_TIMEOUT_MS: z.string().regex(/^\d{1,5}$/).default(String(REDIS_CONNECT_TIMEOUT_DEFAULT_MS)).transform(Number),
+  // Number of trusted proxy hops, socket = hop 0 (Render: 3). 0 trusts no proxy header. See apps/api/src/proxy.ts.
+  TRUST_PROXY_HOPS: z.string().regex(/^[0-5]$/).default('0').transform(Number),
+  // Comma separated browser origins allowed by the API's CORS hook; empty means no cross-origin access. Checked in loadConfig.
+  QP_CORS_ORIGINS: z.string().default('').transform((value) => value.trim() === '' ? [] : value.split(',').map((entry) => entry.trim())),
   QSTASH_TOKEN: z.string().optional(),
   QSTASH_CURRENT_SIGNING_KEY: z.string().optional(),
   QSTASH_NEXT_SIGNING_KEY: z.string().optional(),
@@ -91,6 +119,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error('Worker URL must be an origin');
   }
   if (!isHttpsOrigin(config.QSTASH_URL)) throw new Error('QSTASH_URL must be an https origin');
+  // Constant messages: a rejected list is never echoed, because it may be a pasted secret or a typo of one.
+  if (config.QP_REDIS_CONNECT_TIMEOUT_MS < REDIS_CONNECT_TIMEOUT_MIN_MS || config.QP_REDIS_CONNECT_TIMEOUT_MS > REDIS_CONNECT_TIMEOUT_MAX_MS) {
+    throw new Error('QP_REDIS_CONNECT_TIMEOUT_MS is out of range');
+  }
+  if (config.QP_CORS_ORIGINS.length > CORS_ORIGINS_MAX
+      || !config.QP_CORS_ORIGINS.every((origin) => isCorsOrigin(origin, config.QP_ENV === 'production'))) {
+    throw new Error('QP_CORS_ORIGINS must be exact https origins (http://localhost and http://127.0.0.1 only outside production)');
+  }
   if (config.QP_QUEUE_ADAPTER === 'cloud' && (!config.QP_TASKS_INVOKER_SA || !config.QP_TASKS_OIDC_AUDIENCE
       || workerUrl.protocol !== 'https:' || config.QP_TASKS_OIDC_AUDIENCE !== config.QP_WORKER_URL)) {
     throw new Error('Cloud queue requires HTTPS worker origin, matching audience and invoker service account');

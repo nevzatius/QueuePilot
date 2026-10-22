@@ -70,6 +70,42 @@ timestamps from tenant/status-filtered non-terminal requests because existing in
 watchdogAt. This avoids an infrastructure change, but costs one document read per pending request
 on a cache miss. A more efficient tenant/watchdog count needs an integration-owner index decision.
 
+## Browser access, client IP and Redis timing (B9-4)
+
+All three settings are validated at startup with constant messages that never echo a value.
+
+| Variable | Default | Rules |
+|---|---|---|
+| `QP_CORS_ORIGINS` | empty (no cross-origin access) | Comma separated exact `https` origins, at most 10: no `*`, path, trailing slash, userinfo or default port. `http://localhost` and `http://127.0.0.1` (any port) only outside production. Production needs at least one entry once the web is hosted on another origin (Firebase Hosting); an empty list is valid and means same-origin only. |
+| `TRUST_PROXY_HOPS` | `0` | Integer 0 to 5 (`true`, negatives, decimals and text are rejected). 0 ignores `X-Forwarded-For`. **Render: 3.** |
+| `QP_REDIS_CONNECT_TIMEOUT_MS` | `1500` | Integer 100 to 3000. |
+
+**CORS** (`src/cors.ts`, API only; the worker is called by QStash and sends no CORS headers). An allowed origin is answered
+with that exact origin; every other origin gets no `Access-Control-*` header (never `*`, never an echo). Every response
+carries `Vary: Origin`. A preflight of an allowed origin gets `204` with `GET, POST, OPTIONS`,
+`Authorization, Content-Type, Idempotency-Key`, `Access-Control-Max-Age: 600`, and no credentials (auth is a bearer token); it is
+answered before authentication. `Retry-After`, `Idempotent-Replayed`, `X-Correlation-Id` and `Location` are exposed to scripts.
+CORS is a browser rule, not authentication: a request without a valid token is rejected whatever its `Origin`.
+
+**Client IP** (`src/proxy.ts`). Behind Render the socket address is loopback and `X-Forwarded-For` arrives as
+`<spoofed...>, <client>, <cloudflare>, <render>`; Render does not strip spoofed values (ADR-019 spike, n=1). The client is the
+4th address from the right counting the socket as hop 0, so Render uses `TRUST_PROXY_HOPS=3`. **Re-verify this live in B9-9 and
+whenever the platform changes.** Implementation notes:
+
+- Fastify 5.12 maps a *numeric* `trustProxy` to "trust nobody", so the API passes a function built from the validated integer
+  (`hop < hops`). It is never `true`.
+- The header is honoured only when the socket peer is private, loopback or link-local, and only when it holds at least `hops`
+  entries; otherwise `request.ip` is the socket address, never a client-chosen value.
+- Everything uses `request.ip` (today only the bootstrap IP limiter); no code reads `X-Forwarded-For` by hand.
+
+**Redis connect timeout.** The old fixed 100 ms made every cold start fail closed. Upstash free measured a cold connect of about
+404 ms, warm 24-40 ms, commands about 2 ms (ADR-019 spike, small sample). Connect and command now have separate budgets: connect
+`QP_REDIS_CONNECT_TIMEOUT_MS` (1500 ms), each command 100 ms. A background pre-warm starts at boot; it never blocks or fails boot
+and never changes request behaviour. Fail-closed is unchanged: if Redis cannot be reached within the budget, enforced quotas
+answer `503 QUOTA_UNAVAILABLE` and burst limits fall back to per-instance limits. Worst case with Redis down and no open
+circuit is rate limiter plus quota, each connect + command: 2 x 1.6 s = 3.2 s, inside the 15 s API timeout (ARCHITECTURE section 15);
+after 5 failures the circuit opens for 30 s and requests fail immediately.
+
 ## Verification
 
 ```powershell
