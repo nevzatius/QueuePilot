@@ -16,7 +16,10 @@ export function createRuntime() {
   const clock = { now: () => Date.now() };
   const requests = new FirestoreRequestRepository(db, clock);
   const log = createLogger();
-  const redis = new ManagedRedis(config.QP_REDIS_ENABLED ? createRedisConnection(config.REDIS_URL) : undefined, clock);
+  const redis = new ManagedRedis(config.QP_REDIS_ENABLED
+    ? createRedisConnection(config.REDIS_URL, config.QP_REDIS_CONNECT_TIMEOUT_MS) : undefined, clock, config.QP_REDIS_CONNECT_TIMEOUT_MS);
+  // Background warm-up: boot never waits for it and a failure changes nothing (requests still fail closed).
+  void redis.warm();
   const quota = new RedisQuotaStore(redis, clock, config.QP_REDIS_ENABLED ? config.QP_QUOTA_FAILURE_MODE : 'closed');
   const queue = createDispatchQueue(config, clock, log);
   const app = buildApp({

@@ -1,7 +1,7 @@
 import { Writable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  CachedMetricsService, createLogger, loadConfig, ManagedRedis, RedisMetricsCache,
+  CachedMetricsService, createLogger, loadConfig, ManagedRedis, REDIS_CONNECT_TIMEOUT_DEFAULT_MS, RedisMetricsCache,
   RedisQuotaStore, RedisRateLimiter, RedisUnavailable, metricsKey, quotaKeys,
 } from '@queuepilot/core';
 import type { MetricsResponse } from '@queuepilot/contracts';
@@ -76,12 +76,23 @@ describe('bounded Redis lifecycle', () => {
     let finish!: () => void;
     vi.spyOn(connection, 'connect').mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
     const assertion = expect(redis.get('key')).rejects.toThrow();
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(REDIS_CONNECT_TIMEOUT_DEFAULT_MS);
     await assertion;
     finish();
     await Promise.resolve();
     expect(connection.commands).toBe(0);
     await redis.close();
+  });
+  it('never sends a command when shutdown happens while the connect is in flight and then succeeds in time', async () => {
+    const { redis, connection } = fixture();
+    let finish!: () => void;
+    vi.spyOn(connection, 'connect').mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const request = expect(redis.get('key')).rejects.toBeInstanceOf(RedisUnavailable);
+    await Promise.resolve();
+    await redis.close();
+    finish();
+    await request;
+    expect(connection.commands).toBe(0);
   });
   it('bounds shutdown when quit stalls', async () => {
     vi.useFakeTimers();
@@ -92,6 +103,145 @@ describe('bounded Redis lifecycle', () => {
     await vi.advanceTimersByTimeAsync(100);
     await closing;
     expect(connection.disconnects).toBe(1);
+  });
+});
+
+/** A connect that takes `ms` of (fake) time, like a cold TLS connect to a remote Redis. */
+function slowConnect(connection: RedisDouble, ms: number) {
+  return vi.spyOn(connection, 'connect').mockImplementation(() => new Promise<void>((resolve) => {
+    connection.connects++;
+    setTimeout(() => { connection.status = 'ready'; resolve(); }, ms);
+  }));
+}
+const LIMITS = { submitPerMin: 10, submitPerDayUser: 3, submitPerDayTenant: 5 };
+
+describe('connect timeout (ADR-019: cold connect about 400 ms on Upstash free)', () => {
+  it('defaults to 1500 ms, above the measured cold connect and inside the 1500-2000 range', () => {
+    expect(REDIS_CONNECT_TIMEOUT_DEFAULT_MS).toBe(1500);
+  });
+  it('lets a 400 ms cold connect succeed under the default, then the command still gets its own 100 ms', async () => {
+    vi.useFakeTimers();
+    const { redis, connection } = fixture();
+    slowConnect(connection, 400);
+    const result = redis.get('key');
+    await vi.advanceTimersByTimeAsync(399);
+    expect(connection.commands).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await result).toBeNull();
+    expect(connection.commands).toBe(1);
+  });
+  it('accepts a connect that finishes just inside the timeout', async () => {
+    vi.useFakeTimers();
+    const { redis, connection } = fixture();
+    slowConnect(connection, REDIS_CONNECT_TIMEOUT_DEFAULT_MS - 1);
+    const result = redis.get('key');
+    await vi.advanceTimersByTimeAsync(REDIS_CONNECT_TIMEOUT_DEFAULT_MS - 1);
+    expect(await result).toBeNull();
+  });
+  it('fails closed on a connect slower than the timeout: quota is refused, no command is ever sent', async () => {
+    vi.useFakeTimers();
+    const { quota, connection } = fixture();
+    slowConnect(connection, REDIS_CONNECT_TIMEOUT_DEFAULT_MS + 100);
+    let outcome: unknown = 'pending';
+    const request = quota.consume('alpha', 'alice', LIMITS).catch((error: unknown) => { outcome = error; });
+    await vi.advanceTimersByTimeAsync(REDIS_CONNECT_TIMEOUT_DEFAULT_MS - 1);
+    expect(outcome).toBe('pending');
+    await vi.advanceTimersByTimeAsync(1);
+    await request;
+    expect(outcome).toMatchObject({ code: 'QUOTA_UNAVAILABLE', retryAfter: 30 });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(connection.commands).toBe(0);
+    expect(connection.entries.size).toBe(0);
+  });
+  it('honours a configured timeout in both directions', async () => {
+    vi.useFakeTimers();
+    const tight = fixture();
+    const loose = fixture();
+    slowConnect(tight.connection, 400);
+    slowConnect(loose.connection, 400);
+    const rejected = expect(new ManagedRedis(tight.connection, tight.clock, 300).get('key')).rejects.toBeInstanceOf(RedisUnavailable);
+    const accepted = new ManagedRedis(loose.connection, loose.clock, 500).get('key');
+    await vi.advanceTimersByTimeAsync(400);
+    await rejected;
+    expect(await accepted).toBeNull();
+  });
+  it('bounds the whole Redis-down request path: rate limiter (falls back) then quota (fails closed) take 2 x (connect + command) at most', async () => {
+    vi.useFakeTimers();
+    const { clock, connection, redis, quota } = fixture();
+    const limiter = new RedisRateLimiter(redis, clock, 5, { warn: vi.fn() });
+    vi.spyOn(connection, 'connect').mockImplementation(() => new Promise<void>(() => {}));
+    const started = Date.now();
+    const request = (async () => {
+      await limiter.consume('["alpha","alice"]', 10);
+      await quota.consume('alpha', 'alice', LIMITS).catch(() => {});
+    })();
+    await vi.advanceTimersByTimeAsync(2 * REDIS_CONNECT_TIMEOUT_DEFAULT_MS);
+    await request;
+    expect(Date.now() - started).toBe(2 * REDIS_CONNECT_TIMEOUT_DEFAULT_MS);
+  });
+});
+
+describe('pre-warm', () => {
+  it('connects in the background, so the first request pays no connect', async () => {
+    vi.useFakeTimers();
+    const { redis, connection } = fixture();
+    slowConnect(connection, 400);
+    const warm = redis.warm();
+    await vi.advanceTimersByTimeAsync(400);
+    await warm;
+    expect(connection.status).toBe('ready');
+    expect(await redis.get('key')).toBeNull();
+    expect(connection.connects).toBe(1);
+  });
+  it('shares one connect with a request that arrives meanwhile', async () => {
+    vi.useFakeTimers();
+    const { redis, connection } = fixture();
+    slowConnect(connection, 400);
+    void redis.warm();
+    const request = redis.get('key');
+    await vi.advanceTimersByTimeAsync(400);
+    expect(await request).toBeNull();
+    expect(connection.connects).toBe(1);
+  });
+  it('does not throw when the connect fails, and records no failure (the circuit stays closed)', async () => {
+    const { redis, connection } = fixture();
+    const connect = vi.spyOn(connection, 'connect').mockRejectedValue(new Error('redis://user:secret-password@private-host:6379'));
+    for (let i = 0; i < 6; i++) await expect(redis.warm()).resolves.toBeUndefined();
+    expect(connect).toHaveBeenCalledTimes(6);
+    // Six counted failures would open the circuit on the next failure; the second request would then not even try to connect.
+    await expect(redis.get('key')).rejects.toBeInstanceOf(RedisUnavailable);
+    await expect(redis.get('key')).rejects.toBeInstanceOf(RedisUnavailable);
+    expect(connect).toHaveBeenCalledTimes(8);
+    connect.mockRestore();
+    expect(await redis.get('key')).toBeNull();
+  });
+  it('leaves requests fail-closed while Redis stays down: quota is refused, not allowed', async () => {
+    const { quota, redis, connection } = fixture();
+    vi.spyOn(connection, 'connect').mockRejectedValue(new Error('down'));
+    await redis.warm();
+    await expect(quota.consume('alpha', 'alice', LIMITS)).rejects.toMatchObject({ code: 'QUOTA_UNAVAILABLE' });
+    expect(connection.commands).toBe(0);
+  });
+  it('is a no-op for disabled Redis, a closed client and an already ready connection', async () => {
+    const { clock, redis, connection } = fixture();
+    await expect(new ManagedRedis(undefined, clock).warm()).resolves.toBeUndefined();
+    await redis.get('key');
+    expect(connection.connects).toBe(1);
+    await redis.warm();
+    expect(connection.connects).toBe(1);
+    await redis.close();
+    connection.status = 'wait';
+    await redis.warm();
+    expect(connection.connects).toBe(1);
+  });
+  it('does not block: a connect that never finishes leaves the caller free and the request on its own deadline', async () => {
+    vi.useFakeTimers();
+    const { redis, connection } = fixture();
+    vi.spyOn(connection, 'connect').mockImplementation(() => new Promise<void>(() => {}));
+    void redis.warm();
+    const request = expect(redis.get('key')).rejects.toBeInstanceOf(RedisUnavailable);
+    await vi.advanceTimersByTimeAsync(REDIS_CONNECT_TIMEOUT_DEFAULT_MS);
+    await request;
   });
 });
 
