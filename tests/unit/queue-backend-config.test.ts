@@ -99,7 +99,7 @@ describe('queue backend selection', () => {
   });
 });
 
-const MISMATCH = /^Worker auth mode does not match the queue backend$/;
+const MISMATCH = /^Worker auth mode does not match the queue backend \[QP_WORKER_AUTH_MODE mismatch\]$/;
 
 describe('worker auth mode follows the queue backend', () => {
   it.each([

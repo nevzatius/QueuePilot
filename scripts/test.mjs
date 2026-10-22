@@ -6,7 +6,7 @@ if (!execpath) throw new Error('Run through the root pnpm test script');
 const steps = [
   [process.execPath, ['node_modules/vitest/vitest.mjs', 'run', '--config', 'vitest.config.ts']],
   [process.execPath, [execpath, '--filter', '@queuepilot/web', 'test']],
-  [process.execPath, ['--test', 'infra/offline.test.mjs', 'infra/targeted.test.mjs', 'scripts/scripts.test.mjs', 'scripts/qstash.test.mjs', 'scripts/free.test.mjs']],
+  [process.execPath, ['--test', 'infra/offline.test.mjs', 'infra/targeted.test.mjs', 'scripts/scripts.test.mjs', 'scripts/qstash.test.mjs', 'scripts/free.test.mjs', 'scripts/config-doctor.test.mjs']],
 ];
 for (const [command, args] of steps) {
   const result = spawnSync(command, args, { stdio: 'inherit' });
