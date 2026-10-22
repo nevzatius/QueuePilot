@@ -83,6 +83,17 @@ describe('bounded Redis lifecycle', () => {
     expect(connection.commands).toBe(0);
     await redis.close();
   });
+  it('never sends a command when shutdown happens while the connect is in flight and then succeeds in time', async () => {
+    const { redis, connection } = fixture();
+    let finish!: () => void;
+    vi.spyOn(connection, 'connect').mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const request = expect(redis.get('key')).rejects.toBeInstanceOf(RedisUnavailable);
+    await Promise.resolve();
+    await redis.close();
+    finish();
+    await request;
+    expect(connection.commands).toBe(0);
+  });
   it('bounds shutdown when quit stalls', async () => {
     vi.useFakeTimers();
     const { redis, connection } = fixture();

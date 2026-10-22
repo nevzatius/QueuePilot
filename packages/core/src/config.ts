@@ -52,12 +52,15 @@ export const REDIS_CONNECT_TIMEOUT_MAX_MS = 3000;
 export const CORS_ORIGINS_MAX = 10;
 /** Exact development origins; any port. Never accepted in production. */
 const LOCAL_ORIGIN_HOSTS = ['localhost', '127.0.0.1'];
+/** localhost, 127.0.0.0/8 and [::1]; the URL parser has already canonicalised numeric spellings. */
+const isLoopbackHost = (hostname: string) => hostname === 'localhost' || hostname.endsWith('.localhost')
+  || /^127\.\d+\.\d+\.\d+$/.test(hostname) || hostname === '[::1]';
 /** A CORS entry: an exact https origin, or (outside production) an exact http://localhost or http://127.0.0.1 origin. */
 export function isCorsOrigin(value: string, production: boolean): boolean {
   if (value.includes('*') || !URL.canParse(value)) return false;
   const url = new URL(value);
   if (url.origin !== value) return false;
-  if (url.protocol === 'https:') return true;
+  if (url.protocol === 'https:') return !(production && isLoopbackHost(url.hostname));
   return !production && url.protocol === 'http:' && LOCAL_ORIGIN_HOSTS.includes(url.hostname);
 }
 const CLOUD_TASKS_VARS = ['QP_TASKS_INVOKER_SA', 'QP_TASKS_OIDC_AUDIENCE', 'QP_SCHEDULER_SA', 'QP_REGION', 'QP_TASKS_QUEUE'] as const;
@@ -124,7 +127,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error('QP_REDIS_CONNECT_TIMEOUT_MS is out of range');
   }
   if (config.QP_CORS_ORIGINS.length > CORS_ORIGINS_MAX
-      || !config.QP_CORS_ORIGINS.every((origin) => isCorsOrigin(origin, config.QP_ENV === 'production'))) {
+      || !config.QP_CORS_ORIGINS.every((origin) => isCorsOrigin(origin, config.QP_ENV === 'production'))
+      || (config.QP_ENV === 'production' && new Set(config.QP_CORS_ORIGINS).size !== config.QP_CORS_ORIGINS.length)) {
     throw new Error('QP_CORS_ORIGINS must be exact https origins (http://localhost and http://127.0.0.1 only outside production)');
   }
   if (config.QP_QUEUE_ADAPTER === 'cloud' && (!config.QP_TASKS_INVOKER_SA || !config.QP_TASKS_OIDC_AUDIENCE

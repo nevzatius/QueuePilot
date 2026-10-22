@@ -37,6 +37,26 @@ describe('QP_CORS_ORIGINS', () => {
     expect(dev({ QP_CORS_ORIGINS: origin }).QP_CORS_ORIGINS).toEqual([origin]);
     expect(loadConfig({ QP_ENV: 'development', QP_CORS_ORIGINS: `${WEB},${origin}` }).QP_CORS_ORIGINS).toEqual([WEB, origin]);
   });
+  it('accepts exactly CORS_ORIGINS_MAX origins and rejects one more', () => {
+    const list = (count: number) => Array.from({ length: count }, (_, i) => `https://o${i}.example.test`);
+    expect(dev({ QP_CORS_ORIGINS: list(CORS_ORIGINS_MAX).join(',') }).QP_CORS_ORIGINS).toHaveLength(CORS_ORIGINS_MAX);
+    expect(CORS_ORIGINS_MAX).toBe(10);
+    expect(() => dev({ QP_CORS_ORIGINS: list(CORS_ORIGINS_MAX + 1).join(',') })).toThrow(CORS_MESSAGE);
+  });
+  it.each(['https://localhost', 'https://localhost:5173', 'https://127.0.0.1', 'https://127.5.4.3:8443', 'https://[::1]', 'https://[::1]:8443', 'https://app.localhost'])(
+    'rejects the loopback host %s in production', (origin) => {
+      expect(() => loadConfig({ ...PRODUCTION, QP_CORS_ORIGINS: origin })).toThrow(CORS_MESSAGE);
+      expect(() => loadConfig({ ...PRODUCTION, QP_CORS_ORIGINS: `${WEB},${origin}` })).toThrow(CORS_MESSAGE);
+    });
+  it('keeps https loopback hosts valid outside production', () => {
+    for (const origin of ['https://localhost', 'https://127.5.4.3:8443']) expect(dev({ QP_CORS_ORIGINS: origin }).QP_CORS_ORIGINS).toEqual([origin]);
+  });
+  it('rejects a duplicate entry in production; outside production the list is unchanged', () => {
+    expect(() => loadConfig({ ...PRODUCTION, QP_CORS_ORIGINS: `${WEB},${WEB}` })).toThrow(CORS_MESSAGE);
+    expect(() => loadConfig({ ...PRODUCTION, QP_CORS_ORIGINS: `${WEB}, https://other.example.test ,${WEB}` })).toThrow(CORS_MESSAGE);
+    expect(dev({ QP_CORS_ORIGINS: `${WEB},${WEB}` }).QP_CORS_ORIGINS).toEqual([WEB, WEB]);
+    expect(loadConfig({ ...PRODUCTION, QP_CORS_ORIGINS: `${WEB},https://other.example.test` }).QP_CORS_ORIGINS).toHaveLength(2);
+  });
   it.each(['http://localhost', 'http://localhost:5173', 'http://127.0.0.1:4173', 'http://queuepilot-demo.web.app'])('rejects %s in production', (origin) => {
     expect(() => loadConfig({ ...PRODUCTION, QP_CORS_ORIGINS: origin })).toThrow(CORS_MESSAGE);
     expect(() => loadConfig({ ...PRODUCTION, QP_CORS_ORIGINS: `${WEB},${origin}` })).toThrow(CORS_MESSAGE);
@@ -72,7 +92,9 @@ describe('QP_REDIS_CONNECT_TIMEOUT_MS', () => {
   it.each(['0', '99', '3001', '60000', '-1', '1500.5', '1.5e3', '', ' 1500', 'fast', 'true', '100000'])('rejects %j', (value) => {
     expect(() => dev({ QP_REDIS_CONNECT_TIMEOUT_MS: value })).toThrow(/Invalid API configuration|QP_REDIS_CONNECT_TIMEOUT_MS is out of range/);
   });
-  it('keeps the worst Redis-down request well inside the 15 s API timeout (rate limiter, then quota)', () => {
+  // Documentation only: pure arithmetic on the constants. The real guard is the fake-timer test
+  // "bounds the whole Redis-down request path" in redis.test.ts.
+  it('documents the worst Redis-down request budget against the 15 s API timeout (rate limiter, then quota)', () => {
     const COMMAND_MS = 100;
     expect(2 * (REDIS_CONNECT_TIMEOUT_DEFAULT_MS + COMMAND_MS)).toBeLessThan(5_000);
     expect(2 * (REDIS_CONNECT_TIMEOUT_MAX_MS + COMMAND_MS)).toBeLessThan(15_000 / 2);

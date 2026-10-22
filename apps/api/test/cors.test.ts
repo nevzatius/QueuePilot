@@ -98,6 +98,15 @@ describe('CORS allow-list', () => {
     expect(verifier.verify).not.toHaveBeenCalled();
     await app.close();
   });
+  it('is not a preflight without Access-Control-Request-Method: an OPTIONS with Origin only is authenticated like any request', async () => {
+    const { app, verifier } = edgeApp({ QP_CORS_ORIGINS: LIST });
+    const response = await app.inject({ method: 'OPTIONS', url: '/api/v1/requests', headers: { origin: WEB } });
+    expect(response.statusCode).toBe(401);
+    expect(response.headers['access-control-allow-methods']).toBeUndefined();
+    expect(response.headers['access-control-max-age']).toBeUndefined();
+    expect(verifier.verify).not.toHaveBeenCalled();
+    await app.close();
+  });
   it('treats OPTIONS without Origin as an ordinary request (authenticated like any other)', async () => {
     const { app } = edgeApp({ QP_CORS_ORIGINS: LIST });
     const response = await preflight(app, undefined);

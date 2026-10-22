@@ -14,7 +14,7 @@ import {
   MetricsService, problemDetails, unavailableQuota,
 } from '@queuepilot/core';
 import { corsHook } from './cors.js';
-import { dropShortForwardedChain, trustProxyHops } from './proxy.js';
+import { dropShortForwardedChain, rateLimitAddress, trustProxyHops } from './proxy.js';
 import type { Config, MembershipService, QuotaStore, QuotaSubmitter, RateLimiter, QueuePort, RequestRepository, Tenant, TokenVerifier } from '@queuepilot/core';
 
 declare module 'fastify' {
@@ -82,7 +82,7 @@ export function buildApp(deps: AppDependencies) {
     },
   }, async (request) => {
     await bootstrapLimiter.consume(`uid:${request.identity.uid}`, 10);
-    await bootstrapLimiter.consume(`ip:${request.ip}`, 30);
+    await bootstrapLimiter.consume(`ip:${rateLimitAddress(request)}`, 30);
     const release = await deps.admission.acquire();
     try { return await deps.memberships.bootstrap(request.identity.uid); }
     finally { release(); }

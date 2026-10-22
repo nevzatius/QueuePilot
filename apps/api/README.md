@@ -76,7 +76,7 @@ All three settings are validated at startup with constant messages that never ec
 
 | Variable | Default | Rules |
 |---|---|---|
-| `QP_CORS_ORIGINS` | empty (no cross-origin access) | Comma separated exact `https` origins, at most 10: no `*`, path, trailing slash, userinfo or default port. `http://localhost` and `http://127.0.0.1` (any port) only outside production. Production needs at least one entry once the web is hosted on another origin (Firebase Hosting); an empty list is valid and means same-origin only. |
+| `QP_CORS_ORIGINS` | empty (no cross-origin access) | Comma separated exact `https` origins, at most 10: no `*`, path, trailing slash, userinfo or default port. `http://localhost` and `http://127.0.0.1` (any port) only outside production; in production loopback hosts (`localhost`, `127.0.0.0/8`, `[::1]`) and duplicate entries are rejected. Production needs at least one entry once the web is hosted on another origin (Firebase Hosting); an empty list is valid and means same-origin only. |
 | `TRUST_PROXY_HOPS` | `0` | Integer 0 to 5 (`true`, negatives, decimals and text are rejected). 0 ignores `X-Forwarded-For`. **Render: 3.** |
 | `QP_REDIS_CONNECT_TIMEOUT_MS` | `1500` | Integer 100 to 3000. |
 
@@ -95,8 +95,18 @@ whenever the platform changes.** Implementation notes:
 - Fastify 5.12 maps a *numeric* `trustProxy` to "trust nobody", so the API passes a function built from the validated integer
   (`hop < hops`). It is never `true`.
 - The header is honoured only when the socket peer is private, loopback or link-local, and only when it holds at least `hops`
-  entries; otherwise `request.ip` is the socket address, never a client-chosen value.
-- Everything uses `request.ip` (today only the bootstrap IP limiter); no code reads `X-Forwarded-For` by hand.
+  entries; otherwise `request.ip` is the socket address.
+- **This is not a guarantee that the IP is real.** The result is safe only while the platform appends exactly `TRUST_PROXY_HOPS`
+  entries. A request that reaches the origin through a shorter chain (for example a Cloudflare bypass that appends 2 entries
+  instead of 3) and carries enough forged entries to reach the hop count yields an attacker-chosen IP: with 3 hops, peer
+  `127.0.0.1` and `X-Forwarded-For: 192.0.2.66, 192.0.2.67` plus one appended entry gives `192.0.2.66`. A test documents this limit.
+- The client IP is used **only** by the bootstrap IP limiter (`ip:` key, 30/min). Quotas and the other rate limits are keyed on
+  tenant and uid, never on the IP, so a spoofed IP cannot dodge them. The key uses a normalised address: `::ffff:a.b.c.d` becomes
+  the IPv4 form and IPv6 collapses to its /64. A value at the client slot that is not a valid IP (trailing port, markup) falls back
+  to the socket address.
+- `X-Forwarded-Host` and `X-Forwarded-Proto` are deleted on arrival. The API must never read `request.host`, `hostname` or
+  `protocol`; use configuration instead.
+- The **B9-9 live spoofed-header test is mandatory** before relying on any of this (docs/TASKS.md).
 
 **Redis connect timeout.** The old fixed 100 ms made every cold start fail closed. Upstash free measured a cold connect of about
 404 ms, warm 24-40 ms, commands about 2 ms (ADR-019 spike, small sample). Connect and command now have separate budgets: connect
@@ -105,6 +115,9 @@ and never changes request behaviour. Fail-closed is unchanged: if Redis cannot b
 answer `503 QUOTA_UNAVAILABLE` and burst limits fall back to per-instance limits. Worst case with Redis down and no open
 circuit is rate limiter plus quota, each connect + command: 2 x 1.6 s = 3.2 s, inside the 15 s API timeout (ARCHITECTURE section 15);
 after 5 failures the circuit opens for 30 s and requests fail immediately.
+
+The quota reserve runs inside the Firestore transaction callback (ADR-018), so a cold Redis connect stretches that transaction by
+up to the connect timeout. `/metrics` also makes 2 Redis calls (cache get and set), each with its own connect-or-command budget.
 
 ## Verification
 
