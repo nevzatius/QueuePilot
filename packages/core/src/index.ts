@@ -3,6 +3,7 @@ export * from './admission.js';
 export * from './auth.js';
 export * from './config.js';
 export * from './errors.js';
+export * from './firebase.js';
 export * from './log.js';
 export * from './membership.js';
 export * from './metrics.js';

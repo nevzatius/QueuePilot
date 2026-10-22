@@ -15,18 +15,20 @@ describe('local integration infrastructure', () => {
   it('writes, reads and deletes a Firestore emulator document', async () => {
     const host = localHost('FIRESTORE_EMULATOR_HOST');
     const url = `http://${host}/v1/projects/demo-queuepilot/databases/(default)/documents/foundation/${randomUUID()}`;
+    // firebase.json loads the deny-all rules (as in production); the emulator's owner token bypasses them like the Admin SDK does.
+    const owner = { authorization: 'Bearer owner' };
     try {
       const write = await fetch(url, {
         method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
+        headers: { ...owner, 'content-type': 'application/json' },
         body: JSON.stringify({ fields: { check: { stringValue: 'foundation' } } }),
       });
       expect(write.status).toBe(200);
-      const read = await fetch(url);
+      const read = await fetch(url, { headers: owner });
       expect(read.status).toBe(200);
       expect(await read.json()).toMatchObject({ fields: { check: { stringValue: 'foundation' } } });
     } finally {
-      const deleted = await fetch(url, { method: 'DELETE' });
+      const deleted = await fetch(url, { method: 'DELETE', headers: owner });
       expect(deleted.status).toBe(200);
     }
   });

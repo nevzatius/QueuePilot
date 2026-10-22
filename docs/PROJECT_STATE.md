@@ -1,15 +1,14 @@
 # Project State
 
 Single writer: Claude Code (ADR-013). Keep this file under 60 lines.
-Last updated: 2026-10-21, by Claude Code (B9-2: `QStashQueue` + local qstash profile, branch `claude/b9-2-qstash-adapter`, PR open).
+Last updated: 2026-10-22, by Claude Code (B9-7: free-tier deployment files and scripts, branch `claude/b9-7-free-deploy-files`, PR open).
 
 ## Phase
 
-Architecture v0.2 frozen (ADR-009 to ADR-018), plus ADR-019 (free-tier platform). `main` = `ac6bc2b`: B1-B6 and B7 (PR #1, merged) are in.
+Architecture v0.2 frozen (ADR-009 to ADR-018), plus ADR-019 (free-tier platform, amended 2026-10-22). `main` = `d902add`: B1-B6, B7 and B9-0 to B9-4, B9-6 are in.
 Remote: private `github.com/nevzatius/QueuePilot`. No cloud resource exists. The local MVP works end to end on emulators.
-B8 analysis done. B8.5 spike done (disposable repo `nevzatius/render-qstash-spike`, `402c284`, service deleted).
 The owner has no billing account, so the target is free tiers only: Firebase Spark + Render free + Upstash QStash + Upstash Redis `queuepilot`.
-Cloud Tasks stays supported behind the queue factory. Owner runbook: `docs/DEPLOYMENT_RUNBOOK.md` (GCP path; free path comes in B9-8).
+Cloud Tasks stays supported behind the queue factory. Owner runbook: `docs/DEPLOYMENT_RUNBOOK.md` ("Free-tier path" first, GCP path after it).
 
 ## Milestones
 
@@ -25,19 +24,19 @@ Cloud Tasks stays supported behind the queue factory. Owner runbook: `docs/DEPLO
 
 ## B9 plan (ADR-019)
 
-B9-1 config/production guard/adapter factory. B9-2 `QStashQueue` + `LocalDispatchQueue` QStash profile. B9-3 worker QStash signature verifier, `Retry-After` on 409/503.
-B9-4 CORS allowlist, trustProxy (`TRUST_PROXY_HOPS=3`) with spoofing test. B9-5 Firestore read budget (`count()`, throttled reconcile, `RESOURCE_EXHAUSTED`, Redis connect timeout).
-B9-6 web: cross-origin API URL, 30 s polling, "service waking up". B9-7 `render.yaml`, `firebase.json`, QStash setup/shutdown scripts, preflight free profile, seed-demo limit.
-B9-8 runbook + state. B9-9 owner manual setup and live verification.
+Merged: B9-1 config/production guard/factory, B9-2 `QStashQueue`, B9-3 worker QStash verifier, B9-4 CORS + `TRUST_PROXY_HOPS` + Redis connect timeout, B9-6 web.
+**B9-5 is only partly done**: the Redis connect timeout landed in B9-4; `count()` stuck counts, the time-based reconcile throttle (also for `/internal/reconcile`) and `RESOURCE_EXHAUSTED` classification are open (TASKS "B9-5 must").
+B9-7 (this PR): `render.yaml`, `firebase.json`, QStash setup/shutdown scripts, `preflight --profile free`, `seed-demo --profile free`, `QP_FIREBASE_SERVICE_ACCOUNT_JSON`, runbook free-tier section (covers the B9-8 runbook acceptance).
+B9-9: owner manual setup and live verification (checklists in TASKS.md, "B9-9 live checks").
 
 ## Checks
 
-Last full run (2026-10-20, B7 branch, now merged): lint, typecheck, build, 551 node + 35 web + 59 node:test pass; images smoke-run in CI only. B9-0 is docs only.
+B9-7 branch, 2026-10-22: lint, typecheck, test, build; results in the PR. Images are smoke-run in CI only. Nothing was run against Render, Firebase or Upstash.
 
 ## Blockers (owner actions)
 
-1. Accounts, no card: Firebase project (Spark; Firestore `europe-west1` is irreversible), Render, Upstash (QStash + new Redis `queuepilot`), install gcloud CLI.
-2. Firebase Google provider and authorized domains.
+1. Accounts, no card: Firebase project (Spark; Firestore `europe-west1` is irreversible), Render, Upstash (QStash + new Redis `queuepilot`), install gcloud CLI. Follow the runbook; stop at any card prompt.
+2. Firebase Google provider; service-account key (long-lived, delete at shutdown).
 3. License choice: none added.
 4. Orphan `java` Firestore emulators may still hold local ports (8080/9150/18381); agents do not stop processes. Untracked `PROJECT_CONTEXT.md` is not committed.
 5. pnpm build scripts `re2` and `@firebase/util` stay unapproved (images do not need them).
@@ -45,9 +44,8 @@ Last full run (2026-10-20, B7 branch, now merged): lint, typecheck, build, 551 n
 ## Known risks
 
 - QStash and Render free behaviour is measured only in the spike (ADR-019 Evidence, mostly n=1). Whether retries count toward the 1,000/day message limit is unverified.
-- `QStashQueue`, Cloud Tasks semantics and `CloudTasksQueue` (v2 REST) are unverified live.
-- Redis client timeouts are 100 ms; Upstash cold connect was about 404 ms (B9-5).
-- Spark quotas (50K reads, 20K writes per day) shut the product off when exceeded.
+- `QStashQueue`, the QStash schedule scripts (API shapes from memory), Render Blueprint, Firebase Hosting on Spark and `CloudTasksQueue` (v2 REST) are unverified live.
+- Without the B9-5 remainder, replayed QStash tokens can cost Firestore reads until `exp` + 30 s; Spark quotas (50K reads, 20K writes per day) shut the product off when exceeded.
 - Avoid concurrent sessions on one checkout. `pnpm deploy` fails on Windows across drives; `scripts/integration.mjs` leaves orphan emulators on Windows.
 
 ## Open follow-ups from the B7 review
@@ -57,4 +55,4 @@ T3 `.claude/agents/architecture-reviewer.md` is stale against ADR-017; T4 stale 
 
 ## Next step
 
-1. Review and merge the B9-2 PR (B9-0, B9-1 are merged). 2. Start B9-3 (worker QStash signature verifier, `Retry-After`). 3. Owner: create the accounts in Blockers 1-2 in parallel. B9-2 live checks are listed in TASKS.md (B9 follow-ups).
+1. Review and merge the B9-7 PR. 2. Decide whether to finish the B9-5 remainder before the live run (recommended: it protects the Spark read budget). 3. Owner: B9-9, following the runbook free-tier path in order, then record the live checks in TASKS.md.

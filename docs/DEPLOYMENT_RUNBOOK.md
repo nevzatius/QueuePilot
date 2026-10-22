@@ -1,5 +1,7 @@
 # B7 owner runbook: controlled Google Cloud deployment
 
+> **No billing account?** Use the [free-tier path](#free-tier-path-adr-019-firebase-spark--render-free--upstash) first; sections 0 to I are the paid Google Cloud path.
+
 Status: **prepared offline (2026-10-20, extended by the B7 pre-deployment hardening). Nothing here has been run against Google Cloud.**
 No Google Cloud project, billing, resource or credential was touched, and C1–C9 are all **NOT RUN**. Every command below is executed by the **owner**, after reviewing the plan it prints.
 Agents do not deploy. Source of truth for behaviour: [infra/README.md](../infra/README.md),
@@ -8,6 +10,101 @@ Agents do not deploy. Source of truth for behaviour: [infra/README.md](../infra/
 Command provenance: commands marked **[repo]** are implemented by scripts in this repository and covered by offline tests.
 Commands marked **[docker]** and **[gcloud]** are standard Docker, gcloud or Firebase CLI operations that the repository documents in prose but does not script;
 check them with `--help` before running. Placeholders in `CAPITALS` are yours to fill in; none is invented here.
+
+## Free-tier path (ADR-019): Firebase Spark + Render free + Upstash
+
+> **STOP if any page asks for a card, a payment method or a billing account.** Close it, change nothing, and tell the maintainer which page asked.
+> Every service below has a free plan that needs none. Never click "Upgrade", "Blaze", "Add payment method" or a paid instance type.
+
+Status: **prepared offline (B9-7). Nothing here has been run against Firebase, Render or Upstash**; the live checks are B9-9. The GCP sections below (0 to I) are the
+paid path and are not needed here. Secrets go into the Render dashboard or into your shell session only: never into chat, a commit, a command argument or a file in the repo.
+Placeholders in `CAPITALS` are yours to fill in; none is invented here. Commands are PowerShell; **[repo]** marks scripts in this repository.
+
+Fixed names used below: Redis database `queuepilot`; Render services `queuepilot-api` and `queuepilot-worker` (from `render.yaml`, Frankfurt); Firestore `europe-west1`.
+
+**0. Check the files [repo].** `node scripts/preflight.mjs --profile free`. Expect `PASS` everywhere except `free-firebaserc` (`BLOCKED`: the project id placeholder is replaced by `--project` below, not by editing the file).
+It checks `render.yaml` and `firebase.json` against each other and the production guards; it does not check that any service exists.
+
+**1. Firebase project (Spark).**
+1. Console > Add project. Skip Analytics. Keep the plan on **Spark**. Note `PROJECT_ID` (Project settings > General) and the **project number**.
+2. Build > Firestore Database > Create database > **location `europe-west1`** (cannot be changed afterwards) > production mode.
+3. Build > Authentication > Sign-in method > enable **Google**. (`PROJECT_ID.web.app` and `PROJECT_ID.firebaseapp.com` are authorised domains by default.)
+4. Project settings > Your apps > register a **Web app**; copy `apiKey`, `authDomain`, `projectId`, `appId` (public config, used in step 7).
+5. Label the project, because `seed-demo` and `grant-role` refuse unlabelled projects: `gcloud projects update PROJECT_ID --update-labels=queuepilot-environment=demo` (needs `gcloud auth login`).
+
+**2. Service-account key (the API and worker have no Google identity on Render).**
+1. Project settings > Service accounts > **Generate new private key**. Save the JSON **outside the repo** (for example `D:\QueuePilot-local\`).
+2. You will paste its whole content into the Render field `QP_FIREBASE_SERVICE_ACCOUNT_JSON` in step 4. The apps accept it only from that variable, check it at startup and print a constant message if it is wrong (never its content).
+3. This is a long-lived credential for the Firebase Admin service account (broad project access). Delete the key in the console at shutdown (step 11).
+
+**3. Upstash.**
+1. Redis > Create database named **`queuepilot`**, a Europe region, **TLS on**, free plan. Copy the `rediss://...` URL (`REDIS_URL`).
+2. QStash > copy the **token**, the **current** and **next signing keys**, and the **URL** shown beside the token (`QSTASH_URL`; tokens are regional).
+
+**4. Render services from the Blueprint.**
+1. Render dashboard > New > **Blueprint** > connect the GitHub repository, branch `main`. The two services must show **Free**; if the page asks for a payment method, STOP.
+2. Render asks for every `sync: false` value. Enter them for **both** services (the same value each time): `GCLOUD_PROJECT` = `PROJECT_ID`; `QSTASH_URL`, `QSTASH_TOKEN`, `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY`, `REDIS_URL`; `QP_FIREBASE_SERVICE_ACCOUNT_JSON` (paste the key file content).
+3. Also for both: `QP_WORKER_URL` = `https://queuepilot-worker.onrender.com` (the **expected** worker origin: no path, no trailing slash; corrected in step 5).
+   For the API only: `QP_CORS_ORIGINS` = `https://PROJECT_ID.web.app,https://PROJECT_ID.firebaseapp.com` (the Hosting origins; a request from any other origin gets no CORS headers).
+4. Create. `render.yaml` already fixes `QP_ENV=production`, `QP_QUEUE_ADAPTER=qstash`, `QP_WORKER_AUTH_MODE=qstash`, `TRUST_PROXY_HOPS=3` (API), the free plan and `autoDeploy: false`.
+   Nothing redeploys by itself after a code change; use **Manual Deploy**.
+
+**5. Set the two URLs (the circularity).** The API publishes to the worker, and the worker accepts a QStash call only if the JWT `sub` equals `QP_WORKER_URL` + path, so both services need the worker's real public origin, which Render shows only after the first deploy.
+1. Open each service and copy its URL (`https://....onrender.com`). Check: the worker URL equals what you typed in step 4.3. If not, set `QP_WORKER_URL` on **both** services to the real one and save (Render redeploys).
+2. Note the API URL (`API_URL`) for step 7. Check: `GET API_URL/health` and `GET WORKER_URL/health` each answer `{"status":"ok"}`. The first call after idle takes about 8 to 50 s (cold start); that is expected.
+3. If a service shows "Deploy failed", read its logs: a constant message such as `Invalid API configuration` or `QP_FIREBASE_SERVICE_ACCOUNT_JSON is invalid` names the setting, never the value.
+
+**6. Hosting origin.** `QP_CORS_ORIGINS` (step 4.3) must contain the exact origin the browser loads the web app from. If you use another Hosting site or a custom domain, add its origin there (comma separated, https only, no wildcard) and save.
+
+**7. Deploy Hosting, Firestore rules and indexes.** Build the web app against the API, then deploy with the pinned CLI (Spark has Hosting, Firestore rules and indexes, no Functions, no Storage). Rules stay deny-all (the Admin SDK ignores them):
+
+```powershell
+$env:VITE_API_BASE_URL = 'API_URL'            # https origin, no trailing slash
+$env:VITE_FIREBASE_API_KEY = '...'; $env:VITE_FIREBASE_AUTH_DOMAIN = 'PROJECT_ID.firebaseapp.com'
+$env:VITE_FIREBASE_PROJECT_ID = 'PROJECT_ID'; $env:VITE_FIREBASE_APP_ID = '...'
+corepack pnpm --filter @queuepilot/web build
+corepack pnpm exec firebase --project PROJECT_ID deploy --only hosting,firestore
+```
+
+Never set `VITE_USE_MOCK_API` or the emulator URL. Check: `https://PROJECT_ID.web.app` loads the sign-in page.
+
+**8. QStash schedule [repo].** Every 60 minutes, `POST WORKER_URL/internal/reconcile`. The token comes from your shell only (hidden prompt; there is no `--token` option):
+
+```powershell
+$secure = Read-Host 'QStash token' -AsSecureString; $env:QSTASH_TOKEN = [System.Net.NetworkCredential]::new('', $secure).Password
+$env:QSTASH_URL = 'QSTASH_URL'; $env:QP_WORKER_URL = 'WORKER_URL'
+node scripts/qstash-setup.mjs                                    # dry run: one read-only listing, prints the destination and what it would do
+node scripts/qstash-setup.mjs --apply --approve-destination WORKER_URL/internal/reconcile
+node scripts/qstash-setup.mjs --apply --approve-destination WORKER_URL/internal/reconcile   # again: "unchanged (no write made)"
+```
+
+Check: the Upstash console lists one schedule with cron `0 * * * *`. Exit codes: 0 ok, 2 usage, 3 refused, 4 state conflict, 5 I/O (401 wrong token or region, 429, 5xx).
+The update path uses the `Upstash-Schedule-Id` header and the listing fields `cron`, `retries`, `method`, `isPaused`; both are from memory of the QStash API and are **unverified live** (B9-9).
+
+**9. Tenant and admin [repo]** (uses your `gcloud auth login`; `PROJECT_NUMBER` from step 1). The free profile seeds `sandbox` with sign-up **closed** and **300 requests per day**:
+
+```powershell
+node scripts/seed-demo.mjs --project PROJECT_ID --profile free                                   # dry run
+node scripts/seed-demo.mjs --project PROJECT_ID --profile free --apply --approve-project PROJECT_ID --project-number PROJECT_NUMBER
+```
+
+Bootstrap creates your membership only while the tenant is open, so for your own first sign-in seed with `--open-signup true` (add it to both commands), sign in once on the Hosting site, then run `grant-role` exactly as in section G, steps 3 and 4
+(the dry run prints the uid to approve). To close sign-up again, change `openSignup` in the Firestore console: a re-run of the seed reports an existing tenant as DRIFT and never overwrites it.
+`--tenant-daily-limit N` (1 to 2000) changes the cap. Spark allows 20K writes/day and a request costs 7, so 300/day leaves ample headroom.
+
+**10. Verify (what "works" means here).** None of this has been run yet (B9-9 records the results):
+- [ ] Sign in with Google on the Hosting site; the dashboard loads (a "service waking up" notice during a cold start is normal).
+- [ ] Submit one request: it reaches **COMPLETED** (cold start plus the QStash hop can take a minute or two). The QStash log shows one delivery answered 200.
+- [ ] The browser console shows no CORS error; a request from another origin has no `Access-Control-Allow-Origin`.
+- [ ] After the schedule's first tick, the QStash log shows `POST .../internal/reconcile` answered 200 (not 401).
+- [ ] Counters stay inside the free limits: QStash 1,000 messages/day, Firestore 50K reads and 20K writes/day, Redis 500K commands/month.
+
+**11. Shut everything down (reverse order).** The data is synthetic; nothing here deletes anything you cannot recreate.
+1. `node scripts/qstash-shutdown.mjs` (dry run lists the schedule), then the same with `--apply --approve-destination WORKER_URL/internal/reconcile`. Check: the Upstash schedule list is empty.
+2. Render: suspend or delete both services.
+3. Upstash: delete the `queuepilot` Redis database; rotate or delete the QStash token and signing keys if you will not reuse them.
+4. Firebase: delete the **service-account key** (Project settings > Service accounts > Manage), then `corepack pnpm exec firebase --project PROJECT_ID hosting:disable`. The Firestore location cannot be changed; delete the project to remove the data.
+5. Clear your shell (`Remove-Item Env:QSTASH_TOKEN`) and delete the downloaded key file.
 
 ## 0. Blockers that cannot be solved by commands
 

@@ -65,8 +65,33 @@ export function isCorsOrigin(value: string, production: boolean): boolean {
 }
 const CLOUD_TASKS_VARS = ['QP_TASKS_INVOKER_SA', 'QP_TASKS_OIDC_AUDIENCE', 'QP_SCHEDULER_SA', 'QP_REGION', 'QP_TASKS_QUEUE'] as const;
 /** Config keys whose values are credentials. Never log, dump or put them in an error. */
-export const SECRET_CONFIG_KEYS = [...QSTASH_VARS, 'REDIS_URL'] as const;
+export const SECRET_CONFIG_KEYS = [...QSTASH_VARS, 'REDIS_URL', 'QP_FIREBASE_SERVICE_ACCOUNT_JSON'] as const;
 const isSet = (value: string | undefined) => value !== undefined && value.trim() !== '';
+
+/** The three fields of a Firebase service-account key that the Admin SDK needs. The key itself never leaves the process. */
+export interface FirebaseServiceAccount { projectId: string; clientEmail: string; privateKey: string }
+const SERVICE_ACCOUNT_EMAIL = /^[A-Za-z0-9._-]+@[a-z][a-z0-9-]*\.iam\.gserviceaccount\.com$/;
+const PRIVATE_KEY = /^-----BEGIN PRIVATE KEY-----[\s\S]+-----END PRIVATE KEY-----\s*$/;
+/**
+ * Parses and validates QP_FIREBASE_SERVICE_ACCOUNT_JSON for `projectId`. The ONLY place the raw JSON is interpreted.
+ * Every failure is the same constant message: JSON.parse errors quote a slice of their input, and a rejected key
+ * (or a typo of one) must never end up in a log.
+ */
+export function parseServiceAccount(raw: string, projectId: string): FirebaseServiceAccount {
+  const invalid = new Error('QP_FIREBASE_SERVICE_ACCOUNT_JSON is invalid');
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { throw invalid; }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw invalid;
+  const { type, project_id: keyProject, client_email: clientEmail, private_key: privateKey } = value as Record<string, unknown>;
+  if (type !== 'service_account' || keyProject !== projectId || typeof clientEmail !== 'string' || !SERVICE_ACCOUNT_EMAIL.test(clientEmail)
+      || typeof privateKey !== 'string' || !PRIVATE_KEY.test(privateKey)) throw invalid;
+  return { projectId, clientEmail, privateKey };
+}
+/** The configured service account, or undefined when none is set (the SDK then falls back to ambient credentials). */
+export function configuredServiceAccount(config: Pick<Config, 'GCLOUD_PROJECT' | 'QP_FIREBASE_SERVICE_ACCOUNT_JSON'>): FirebaseServiceAccount | undefined {
+  const raw = config.QP_FIREBASE_SERVICE_ACCOUNT_JSON;
+  return isSet(raw) ? parseServiceAccount(raw!, config.GCLOUD_PROJECT) : undefined;
+}
 
 const ConfigSchema = z.object({
   QP_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -98,6 +123,8 @@ const ConfigSchema = z.object({
   TRUST_PROXY_HOPS: z.string().regex(/^[0-5]$/).default('0').transform(Number),
   // Comma separated browser origins allowed by the API's CORS hook; empty means no cross-origin access. Checked in loadConfig.
   QP_CORS_ORIGINS: z.string().default('').transform((value) => value.trim() === '' ? [] : value.split(',').map((entry) => entry.trim())),
+  // Service-account key JSON for hosts without an ambient Google identity (Render). Opt-in; validated in loadConfig.
+  QP_FIREBASE_SERVICE_ACCOUNT_JSON: z.string().optional(),
   QSTASH_TOKEN: z.string().optional(),
   QSTASH_CURRENT_SIGNING_KEY: z.string().optional(),
   QSTASH_NEXT_SIGNING_KEY: z.string().optional(),
@@ -130,6 +157,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       || !config.QP_CORS_ORIGINS.every((origin) => isCorsOrigin(origin, config.QP_ENV === 'production'))
       || (config.QP_ENV === 'production' && new Set(config.QP_CORS_ORIGINS).size !== config.QP_CORS_ORIGINS.length)) {
     throw new Error('QP_CORS_ORIGINS must be exact https origins (http://localhost and http://127.0.0.1 only outside production)');
+  }
+  if (isSet(config.QP_FIREBASE_SERVICE_ACCOUNT_JSON)) {
+    if (env.FIRESTORE_EMULATOR_HOST || env.FIREBASE_AUTH_EMULATOR_HOST || config.GCLOUD_PROJECT.startsWith('demo-')) {
+      throw new Error('QP_FIREBASE_SERVICE_ACCOUNT_JSON is not allowed with an emulator or a demo project');
+    }
+    configuredServiceAccount(config); // throws the constant message when the key is unusable
   }
   if (config.QP_QUEUE_ADAPTER === 'cloud' && (!config.QP_TASKS_INVOKER_SA || !config.QP_TASKS_OIDC_AUDIENCE
       || workerUrl.protocol !== 'https:' || config.QP_TASKS_OIDC_AUDIENCE !== config.QP_WORKER_URL)) {

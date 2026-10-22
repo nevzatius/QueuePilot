@@ -198,11 +198,15 @@ The worker side is bounded by queue `maxDispatchesPerSecond` and `maxConcurrentD
 
 Redis is used for exactly two things: limits and metrics cache. Business state never depends on it.
 
-| Use | Normal | Redis unavailable (100 ms timeout, circuit opens for 30 s after 5 failures) |
+| Use | Normal | Redis unavailable (connect timeout 1500 ms by default, 100 ms per command; circuit opens for 30 s after 5 failures) |
 |---|---|---|
 | Burst rate limit (per user per minute) | Redis atomic counter | Per-instance memory limiter at `limit / maxInstances`. Logged as `ratelimit.degraded` |
 | **Submission quotas** (per-user/day, tenant/day) where `quotaMode=enforced` | Redis counters | **Fail closed:** `503 QUOTA_UNAVAILABLE` + `Retry-After`. Never bypassed. `QP_QUOTA_FAILURE_MODE=open` is allowed only when `QP_ENV!=production`, which is checked at startup |
 | Metrics cache (5 s, single-flight) | Redis | In-memory 5 s cache plus Firestore `count()` |
+
+The connect timeout is `QP_REDIS_CONNECT_TIMEOUT_MS` (100 to 3000, default 1500; Upstash free cold connect measured about 400 ms) and a background pre-warm runs at boot; the 100 ms command timeout is unchanged. Worst Redis-down request: rate limiter then quota, 2 x (1500 + 100) = 3.2 s, inside the 15 s API timeout; fail-closed is unchanged.
+
+Client IP behind a platform proxy (ADR-019 amendment): `TRUST_PROXY_HOPS` (0 to 5, default 0) counts trusted hops with the socket as hop 0; Render needs 3. Fastify 5.12.7 treats a *numeric* `trustProxy` as "trust nobody", so the API passes a hop function (`hop < hops`), never `true`, and uses `X-Forwarded-For` only when the socket peer is private or loopback and at least `hops` entries exist. It is safe only while the platform appends exactly that many entries (live check B9-9).
 
 With `QP_REDIS_ENABLED=false` (benchmark "off" arm), only tenants with `quotaMode=none` (operator-provisioned `loadtest`) can submit. Open-signup tenants are rejected with `QUOTA_UNAVAILABLE`.
 

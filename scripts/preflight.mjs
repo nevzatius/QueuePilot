@@ -14,6 +14,7 @@ import { accessToken, cloudClient } from '../infra/cloud.mjs';
 // (or any BLOCKED with --strict).
 //
 //   node scripts/preflight.mjs [--config C] [--project P] [--region europe-west1] [--json] [--strict]
+//   node scripts/preflight.mjs --profile free     (adds render.yaml / firebase.json consistency checks; no network)
 //
 // Cloud read mode (opt-in, owner credentials): GET requests only, never a write. Statuses PASS / FAIL /
 // ABSENT / UNKNOWN; exit 1 on FAIL, 3 on UNKNOWN, 0 otherwise.
@@ -22,7 +23,7 @@ import { accessToken, cloudClient } from '../infra/cloud.mjs';
 const OPTIONS = {
   config: { type: 'string' }, project: { type: 'string' }, region: { type: 'string' },
   json: { type: 'boolean', default: false }, strict: { type: 'boolean', default: false },
-  run: { type: 'boolean', default: false }, 'approve-project': { type: 'string' },
+  run: { type: 'boolean', default: false }, 'approve-project': { type: 'string' }, profile: { type: 'string' },
 };
 const root = fileURLToPath(new URL('..', import.meta.url));
 
@@ -65,6 +66,8 @@ export async function cloudPreflightMain(values, io, deps) {
 
 export function preflightMain(argv, io, env = process.env) {
   const values = parseOptions(argv, OPTIONS);
+  if (values.profile !== undefined && values.profile !== 'free') throw new ScriptError(EXIT.USAGE, '--profile must be free');
+  if (values.profile !== undefined && values.run) throw new ScriptError(EXIT.USAGE, '--profile is a local check and cannot be combined with --run');
   if (values.run) {
     return cloudPreflightMain(values, io, {
       readFile: (path) => { try { return readFileSync(path, 'utf8'); } catch { throw new ScriptError(EXIT.USAGE, 'Cannot read the configuration file'); } },
@@ -79,7 +82,7 @@ export function preflightMain(argv, io, env = process.env) {
   const results = runPreflight({
     read: (path) => readFileSync(join(root, path), 'utf8'), exists: (path) => existsSync(join(root, path)),
     listFiles: () => walk(root), env, tool: hasTool, nodeVersion: process.version,
-    args: { config: values.config, configText, project: values.project, region: values.region },
+    args: { config: values.config, configText, project: values.project, region: values.region, profile: values.profile },
   });
   const summary = summarize(results, values.strict);
   if (values.json) io.out(JSON.stringify({ results, ...summary }, null, 2));
