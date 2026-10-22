@@ -10,6 +10,7 @@ import { EXIT, ScriptError } from './ops.mjs';
 export const RECONCILE_PATH = '/internal/reconcile';
 /** Every 60 minutes, UTC (ADR-019). QStash cron has five fields. */
 export const RECONCILE_CRON = '0 * * * *';
+/** Regional hosts have the shape https://qstash-<region>.upstash.io (QStash API reference, server URLs). */
 export const DEFAULT_QSTASH_URL = 'https://qstash.upstash.io';
 /** Mirror the B9-1 limits in packages/core/src/config.ts (QP_QSTASH_RETRIES 0-3, QP_QSTASH_TIMEOUT 60 s - 15 min); a test keeps them in step. */
 export const DEFAULT_RETRIES = 2;
@@ -18,11 +19,12 @@ export const DEFAULT_TIMEOUT = '90s';
 export const TIMEOUT_MIN_MS = 60_000;
 export const TIMEOUT_MAX_MS = 15 * 60_000;
 
-const GO_DURATION = /^(?:\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h))+$/;
-const UNIT_MS = { ns: 1e-6, us: 1e-3, 'µs': 1e-3, ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
-export const durationMs = (value) => [...value.matchAll(/(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)/g)].reduce((sum, [, amount, unit]) => sum + Number(amount) * UNIT_MS[unit], 0);
-/** A Go duration WITH a unit inside the validated range, as `Upstash-Timeout` requires (a bare number is answered with 400). */
-export const isTimeout = (value) => GO_DURATION.test(value) && durationMs(value) >= TIMEOUT_MIN_MS && durationMs(value) <= TIMEOUT_MAX_MS;
+/** `<number><s|m|h>`: the only `Upstash-Timeout` format the QStash API documents. Mirrors QSTASH_DURATION in packages/core. */
+const QSTASH_DURATION = /^\d+[smh]$/;
+const UNIT_MS = { s: 1000, m: 60_000, h: 3_600_000 };
+export const durationMs = (value) => Number(value.slice(0, -1)) * UNIT_MS[value.slice(-1)];
+/** A single-unit duration inside the validated range (a bare number is answered with 400; `1m30s`, `1.5s` and `90000ms` are undocumented). */
+export const isTimeout = (value) => QSTASH_DURATION.test(value) && durationMs(value) >= TIMEOUT_MIN_MS && durationMs(value) <= TIMEOUT_MAX_MS;
 
 /** An https origin with no credentials, path, query or fragment. */
 const isHttpsOrigin = (value) => URL.canParse(value) && new URL(value).protocol === 'https:' && new URL(value).origin === value;
@@ -38,12 +40,12 @@ export function resolveSettings({ env, values }) {
   if (!worker || !isHttpsOrigin(worker) || isLocalHost(new URL(worker).hostname)) {
     throw new ScriptError(EXIT.USAGE, 'QP_WORKER_URL must be set to the worker public https origin (no path, no localhost)');
   }
-  const baseUrl = env.QSTASH_URL || DEFAULT_QSTASH_URL;
+  const baseUrl = env.QSTASH_URL?.trim() || DEFAULT_QSTASH_URL; // blank counts as unset, as in packages/core config
   if (!isHttpsOrigin(baseUrl)) throw new ScriptError(EXIT.USAGE, 'QSTASH_URL must be an https origin');
   const retries = values.retries ?? String(DEFAULT_RETRIES);
   if (!/^\d$/.test(retries) || Number(retries) > MAX_RETRIES) throw new ScriptError(EXIT.USAGE, `--retries must be 0 to ${MAX_RETRIES}`);
   const timeout = values.timeout ?? DEFAULT_TIMEOUT;
-  if (!isTimeout(timeout)) throw new ScriptError(EXIT.USAGE, '--timeout must be a Go duration with a unit (for example 90s) between 60s and 15m');
+  if (!isTimeout(timeout)) throw new ScriptError(EXIT.USAGE, '--timeout must be a number with one unit s, m or h (for example 90s) between 60s and 15m');
   return { baseUrl, destination: `${worker}${RECONCILE_PATH}`, cron: RECONCILE_CRON, retries: Number(retries), timeout };
 }
 
@@ -117,17 +119,33 @@ export const forDestination = (schedules, destination) => schedules.filter((entr
 const idOf = (entry) => (typeof entry.scheduleId === 'string' ? entry.scheduleId : '(no id)');
 export const describeIds = (matches) => matches.map(idOf).join(', ');
 
-/** The timeout the listing shows for a schedule, in ms, or undefined when the listing does not expose one. */
+/**
+ * The timeout the listing shows for a schedule, in ms, or undefined. The documented list schema (scheduleId, cron,
+ * destination, createdAt, method, isPaused, header, retries, ...) has NO timeout field, and `header` holds the
+ * forwarded headers, which do not include Upstash-Timeout. A value is read only if some `header` entry carries one.
+ */
 function listedTimeoutMs(entry) {
-  const header = Object.entries(entry.header ?? entry.headers ?? {}).find(([name]) => name.toLowerCase() === 'upstash-timeout')?.[1];
-  const value = entry.timeout ?? (Array.isArray(header) ? header[0] : header);
-  if (typeof value === 'number') return value * 1000;
-  return typeof value === 'string' && GO_DURATION.test(value) ? durationMs(value) : undefined;
+  const header = Object.entries(entry.header ?? {}).find(([name]) => name.toLowerCase() === 'upstash-timeout')?.[1];
+  const value = Array.isArray(header) ? header[0] : header;
+  return typeof value === 'string' && QSTASH_DURATION.test(value) ? durationMs(value) : undefined;
 }
 
-/** Whether a listed schedule already has the wanted settings. A field the listing omits counts as different, so the safe upsert runs. */
-export function isCurrent(entry, wanted) {
+/** The fields the listing really shows (and, when it happens to show a timeout, that too) equal the wanted settings. A field the listing omits counts as different. */
+export function listedSettingsMatch(entry, wanted) {
   const timeout = listedTimeoutMs(entry);
   return entry.cron === wanted.cron && entry.retries === wanted.retries && entry.method === 'POST' && entry.isPaused !== true
     && (timeout === undefined || timeout === durationMs(wanted.timeout));
 }
+
+/**
+ * Whether an existing schedule can be left alone. Only when the listing PROVES that the timeout equals the wanted one:
+ * a schedule whose timeout cannot be seen is not "current", so the caller upserts it in place (Upstash-Schedule-Id keeps
+ * the id and creates no duplicate). The alternative, printing "cannot verify" and leaving it, would let a changed
+ * --timeout silently never apply. Cost: one cheap write per run; no message is published.
+ */
+export function isCurrent(entry, wanted) {
+  return listedTimeoutMs(entry) !== undefined && listedSettingsMatch(entry, wanted);
+}
+
+/** True when the listing shows no timeout, so a run cannot compare it and always rewrites it. */
+export const timeoutIsListed = (entry) => listedTimeoutMs(entry) !== undefined;

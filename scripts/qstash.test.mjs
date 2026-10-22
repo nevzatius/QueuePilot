@@ -20,10 +20,12 @@ const io = () => { const lines = []; return { lines, out: (m) => lines.push(m), 
 const jsonResponse = (status, body, headers = {}) => ({ status, headers: new Headers(headers), json: async () => body });
 
 /**
- * A stateful QStash double. It stores what a create/upsert request carried and lists it back in the
- * documented shape, records every call, and can be told to fail or to echo the token in its bodies.
+ * A stateful QStash double. It stores what a create/upsert request carried and lists it back in the documented
+ * list schema (scheduleId, cron, destination, createdAt, method, isPaused, header, retries: NO timeout field, see
+ * the QStash "list schedules" API reference), records every call, and can be told to fail or to echo the token in
+ * its bodies. `listTimeout` makes it list the timeout in `header` too, which the real API is not known to do.
  */
-function fakeQStash({ schedules = [], failWith, echoToken = false } = {}) {
+function fakeQStash({ schedules = [], failWith, echoToken = false, listTimeout = false } = {}) {
   const state = { schedules: structuredClone(schedules), calls: [], next: 1 };
   const fetchImpl = async (url, init = {}) => {
     const method = init.method ?? 'GET';
@@ -39,7 +41,7 @@ function fakeQStash({ schedules = [], failWith, echoToken = false } = {}) {
       const h = init.headers;
       const id = h['upstash-schedule-id'] ?? `scd_${state.next++}`;
       const entry = { scheduleId: id, destination, cron: h['upstash-cron'], method: h['upstash-method'], retries: Number(h['upstash-retries']),
-        header: { 'Upstash-Timeout': [h['upstash-timeout']] }, isPaused: false };
+        createdAt: 1_760_000_000_000, header: listTimeout ? { 'Upstash-Timeout': [h['upstash-timeout']] } : {}, isPaused: false };
       const index = state.schedules.findIndex((s) => s.scheduleId === id);
       if (index >= 0) state.schedules[index] = entry; else state.schedules.push(entry);
       return jsonResponse(h['upstash-schedule-id'] ? 200 : 201, { scheduleId: id, ...echo });
@@ -56,7 +58,8 @@ function fakeQStash({ schedules = [], failWith, echoToken = false } = {}) {
   return Object.assign(state, { fetch: fetchImpl, writes: () => state.calls.filter((c) => c.method !== 'GET') });
 }
 const existing = (over = {}) => ({ scheduleId: 'scd_old', destination: DESTINATION, cron: '0 * * * *', method: 'POST', retries: 2,
-  header: { 'Upstash-Timeout': ['90s'] }, isPaused: false, ...over });
+  createdAt: 1_760_000_000_000, header: {}, isPaused: false, ...over });
+const withListedTimeout = (value, over = {}) => existing({ header: { 'Upstash-Timeout': [value] }, ...over });
 const setup = (argv, fake, env = ENV) => { const out = io(); return runSetup(parseSetupArgs(argv), { io: out, env, fetch: fake.fetch }).then((code) => ({ code, out })); };
 const shutdown = (argv, fake, env = ENV) => { const out = io(); return runQStashShutdown(parseShutdownArgs(argv), { io: out, env, fetch: fake.fetch }).then((code) => ({ code, out })); };
 const refuses = (promise, exitCode) => assert.rejects(promise, (error) => error instanceof ScriptError && error.exitCode === exitCode, `expected exit ${exitCode}`);
@@ -98,15 +101,44 @@ test('qstash-setup: apply creates one schedule with cron, retries, method and a 
   assert.equal(fake.schedules.length, 1);
 });
 
-test('qstash-setup: re-applying is a no-op (no write call) and never duplicates', async () => {
+test('qstash-setup: the listing shows no timeout, so a re-apply rewrites the same schedule in place and never duplicates', async () => {
   const fake = fakeQStash();
   await setup(APPLY, fake);
   fake.calls.length = 0;
   const { code, out } = await setup(APPLY, fake);
   assert.equal(code, EXIT.OK);
-  assert.equal(fake.writes().length, 0);
-  assert.match(out.lines.join('\n'), /unchanged \(no write made\)/);
+  assert.equal(fake.writes().length, 1);
+  assert.equal(fake.writes()[0].headers['upstash-schedule-id'], 'scd_1', 'an upsert under the existing id');
+  assert.match(out.lines.join('\n'), /updated[\s\S]*Confirmed by re-read/);
+  assert.ok(!/unchanged/.test(out.lines.join('\n')), 'never claims "unchanged" when the timeout cannot be seen');
   assert.equal(fake.schedules.length, 1);
+});
+
+test('qstash-setup: a change of ONLY the timeout is applied (the listing cannot show it, so the schedule is updated in place)', async () => {
+  const fake = fakeQStash({ schedules: [existing()] }); // cron, retries, method and paused state all equal the wanted ones
+  const dry = await setup(['--timeout', '5m'], fake);
+  assert.match(dry.out.lines.join('\n'), /Would update schedule scd_old in place[\s\S]*does not show a schedule timeout/);
+  assert.equal(fake.writes().length, 0);
+  await setup(['--timeout', '5m', ...APPLY], fake);
+  assert.equal(fake.writes().length, 1);
+  assert.equal(fake.writes()[0].headers['upstash-timeout'], '5m');
+  assert.equal(fake.writes()[0].headers['upstash-schedule-id'], 'scd_old');
+  assert.equal(fake.schedules.length, 1);
+});
+
+test('qstash-setup: if a listing does show the timeout, it is compared: equal means unchanged, different means update', async () => {
+  const same = fakeQStash({ schedules: [withListedTimeout('90s')], listTimeout: true });
+  const unchanged = await setup(APPLY, same);
+  assert.equal(same.writes().length, 0);
+  assert.match(unchanged.out.lines.join('\n'), /unchanged \(no write made\)/);
+  const different = fakeQStash({ schedules: [withListedTimeout('2m')], listTimeout: true });
+  await setup(APPLY, different);
+  assert.equal(different.writes().length, 1);
+  assert.equal(different.writes()[0].headers['upstash-timeout'], '90s');
+  assert.equal(different.schedules[0].header['Upstash-Timeout'][0], '90s');
+  const minutes = fakeQStash({ schedules: [withListedTimeout('1m')], listTimeout: true }); // 1m equals 60s
+  await setup(['--timeout', '60s', ...APPLY], minutes);
+  assert.equal(minutes.writes().length, 0);
 });
 
 test('qstash-setup: a schedule with other settings is updated in place under its own id, not duplicated', async () => {
@@ -124,7 +156,7 @@ test('qstash-setup: a schedule with other settings is updated in place under its
 
 test('qstash-setup: a paused schedule counts as different; an unrelated schedule is never touched', async () => {
   const unrelated = existing({ scheduleId: 'scd_other', destination: OTHER, cron: '* * * * *' });
-  const fake = fakeQStash({ schedules: [unrelated, existing({ isPaused: true })] });
+  const fake = fakeQStash({ schedules: [unrelated, withListedTimeout('90s', { isPaused: true })] });
   await setup(APPLY, fake).catch(() => {}); // the double's upsert un-pauses, so this converges
   assert.equal(fake.writes().length, 1);
   assert.deepEqual(fake.schedules.find((s) => s.scheduleId === 'scd_other'), unrelated);
@@ -155,7 +187,7 @@ test('qstash-setup: approval and usage refusals happen before any network call',
   for (const env of [{ QSTASH_TOKEN: TOKEN }, { ...ENV, QP_WORKER_URL: 'http://qp-worker.example.test' }, { ...ENV, QP_WORKER_URL: 'https://localhost' },
     { ...ENV, QP_WORKER_URL: 'https://127.0.0.1' }, { ...ENV, QP_WORKER_URL: `${WORKER}/path` }, { ...ENV, QP_WORKER_URL: `${WORKER}/` }, { ...ENV, QSTASH_URL: 'http://qstash.example.test' },
     { ...ENV, QSTASH_TOKEN: 'has a space inside it' }]) await refuses(setup([], fake, env), EXIT.USAGE);
-  for (const argv of [['--timeout', '60'], ['--timeout', '30s'], ['--timeout', '16m'], ['--timeout', '1h30m'], ['--retries', '4'], ['--retries', '-1'], ['--retries', 'two'],
+  for (const argv of [['--timeout', '60'], ['--timeout', '30s'], ['--timeout', '16m'], ['--timeout', '1h30m'], ['--timeout', '1m30s'], ['--timeout', '90000ms'], ['--timeout', '1.5s'], ['--timeout', '1.5m'], ['--timeout', '90.5s'], ['--timeout', '90S'], ['--timeout', ' 90s'], ['--retries', '4'], ['--retries', '-1'], ['--retries', 'two'],
     ['--cron', '* * * * *'], ['extra'], ['--retries', '1', '--retries', '2']]) {
     await assert.rejects(async () => setup(argv, fake), (error) => error instanceof ScriptError && error.exitCode === EXIT.USAGE, argv.join(' '));
   }
@@ -170,13 +202,44 @@ test('qstash-setup: accepts the validated bounds for retries and timeout and sen
   const second = fakeQStash();
   await setup(['--retries', '0', '--timeout', '60s', ...APPLY], second);
   assert.equal(second.writes()[0].headers['upstash-retries'], '0');
+  for (const timeout of ['60s', '90s', '5m', '15m', '900s']) assert.equal(isTimeout(timeout), true, timeout);
+  for (const timeout of ['16m', '1h', '59s', '1m30s', '90000ms', '1.5s', '1.5m', '90.5s', '90', '', '1h30m', '0s', '-5s']) assert.equal(isTimeout(timeout), false, timeout);
 });
 
-test('QSTASH_URL selects the region: every call goes to that host', async () => {
+test('--approve-destination alone is not --apply: setup and shutdown stay a dry run and make no write', async () => {
+  const approveOnly = ['--approve-destination', DESTINATION];
+  const creating = fakeQStash();
+  const created = await setup(approveOnly, creating);
+  assert.equal(created.code, EXIT.OK);
+  assert.match(created.out.lines.join('\n'), /^DRY RUN/);
+  assert.equal(creating.writes().length, 0);
+  assert.equal(creating.schedules.length, 0);
+  const updating = fakeQStash({ schedules: [existing({ cron: '*/5 * * * *' })] });
+  await setup(approveOnly, updating);
+  assert.equal(updating.writes().length, 0);
+  assert.equal(updating.schedules[0].cron, '*/5 * * * *');
+  const deleting = fakeQStash({ schedules: [existing()] });
+  const result = await shutdown(approveOnly, deleting);
+  assert.equal(result.code, EXIT.OK);
+  assert.match(result.out.lines.join('\n'), /^DRY RUN[\s\S]*Nothing was deleted/);
+  assert.equal(deleting.writes().length, 0);
+  assert.equal(deleting.schedules.length, 1);
+});
+
+test('QSTASH_URL selects the region (https://qstash-<region>.upstash.io): every call goes to that host', async () => {
   const fake = fakeQStash();
-  await setup(APPLY, fake, { ...ENV, QSTASH_URL: 'https://eu-central-1.qstash.example.test' });
+  await setup(APPLY, fake, { ...ENV, QSTASH_URL: 'https://qstash-eu-central-1.upstash.io' });
   assert.ok(fake.calls.length > 0);
-  for (const call of fake.calls) assert.ok(call.url.startsWith('https://eu-central-1.qstash.example.test/v2/schedules'), call.url);
+  for (const call of fake.calls) assert.ok(call.url.startsWith('https://qstash-eu-central-1.upstash.io/v2/schedules'), call.url);
+});
+
+test('a blank QSTASH_URL means the default, as in packages/core config', async () => {
+  for (const blank of ['', '   ']) {
+    const fake = fakeQStash();
+    await setup(APPLY, fake, { ...ENV, QSTASH_URL: blank });
+    assert.ok(fake.calls.length > 0);
+    assert.ok(fake.calls.every((call) => call.url.startsWith('https://qstash.upstash.io/v2/schedules')), JSON.stringify(blank));
+  }
 });
 
 test('the token cannot be passed as an argument and never appears in any output or error', async () => {
@@ -299,6 +362,7 @@ test('the script constants stay in step with packages/core (B9-1 limits and the 
   const config = readFileSync(`${root}packages/core/src/config.ts`, 'utf8');
   assert.match(config, /QSTASH_TIMEOUT_MIN_MS = 60_000/);
   assert.match(config, /QSTASH_TIMEOUT_MAX_MS = 15 \* 60_000/);
+  assert.match(config, /const QSTASH_DURATION = \/\^\\d\+\[smh\]\$\/;/); // the same single-unit format as scripts/lib/qstash.mjs
   assert.equal(TIMEOUT_MIN_MS, 60_000);
   assert.equal(TIMEOUT_MAX_MS, 15 * 60_000);
   assert.match(config, /QP_QSTASH_RETRIES: z\.string\(\)\.regex\(\/\^\[0-3\]\$\/\)\.default\('2'\)/);

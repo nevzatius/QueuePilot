@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from 'node:crypto';
 import { deleteApp } from 'firebase-admin/app';
 import { describe, expect, it } from 'vitest';
-import { createFirebaseApp, loadConfig } from '../src/index.js';
+import { createFirebaseApp, createLogger, loadConfig } from '../src/index.js';
 
 // A throwaway key generated at test time: no key material is stored in the repository.
 const PROJECT = 'qp-test-project';
@@ -20,6 +20,25 @@ describe('createFirebaseApp', () => {
     try {
       expect(app.options.projectId).toBe(PROJECT);
       expect(app.options.credential).toMatchObject({ projectId: PROJECT, clientEmail: EMAIL });
+    } finally { await deleteApp(app); }
+  });
+
+  it('logging the app, its options or its credential never writes the key', async () => {
+    const config = loadConfig({ ...PROD, QP_FIREBASE_SERVICE_ACCOUNT_JSON: keyJson });
+    const app = createFirebaseApp(config, 'credential-test-logging');
+    try {
+      const lines: string[] = [];
+      const logger = createLogger({ write: (line: string) => { lines.push(line); } });
+      logger.info({ app }, 'the whole app');
+      logger.info({ options: app.options }, 'the options');
+      logger.info({ credential: app.options.credential }, 'the credential');
+      logger.info(app.options as object, 'options as the log object');
+      logger.info({ ctx: { options: app.options } }, 'options one level down');
+      expect(lines).toHaveLength(5);
+      const text = lines.join('\n');
+      expect(text).not.toContain(privateKey.split('\n')[1]!.slice(0, 24));
+      expect(text).not.toContain(privateKey.replaceAll('\n', '\n'));
+      expect(text).toContain('[REDACTED]');
     } finally { await deleteApp(app); }
   });
 

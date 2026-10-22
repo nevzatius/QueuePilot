@@ -1,13 +1,15 @@
+import { createPrivateKey } from 'node:crypto';
 import { z } from 'zod';
 
 const integer = (fallback: number, max = 1_000_000) => z.coerce.number().int().positive().max(max).default(fallback);
 /**
- * Go-style duration WITH a unit, as QStash `Upstash-Timeout` requires: a bare number such as `60` is
- * answered with 400. The timeout must cover a Render free cold start (up to about 50 s per Render docs,
- * 8-14 s measured in the ADR-019 spike) plus the processing itself, or QStash aborts and retries a
- * delivery that is still starting up.
+ * `<number><unit>` with ONE unit s, m or h, which is the format the QStash API documents for `Upstash-Timeout`
+ * (create-a-schedule and publish pages). A bare number such as `60` is answered with 400, and compound or
+ * fractional Go durations (`1m30s`, `1.5s`, `90000ms`) are not documented, so they are rejected rather than
+ * trusted. The timeout must cover a Render free cold start (up to about 50 s per Render docs, 8-14 s measured
+ * in the ADR-019 spike) plus the processing itself, or QStash aborts and retries a delivery that is still starting up.
  */
-const GO_DURATION = /^(?:\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h))+$/;
+const QSTASH_DURATION = /^\d+[smh]$/;
 /**
  * Bounds for QP_QSTASH_TIMEOUT. Lower: covers the Render free cold start (8-14 s measured, up to about
  * 50 s documented) plus processing. Upper: QStash's documented maximum HTTP timeout. The free-plan
@@ -15,12 +17,10 @@ const GO_DURATION = /^(?:\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h))+$/;
  */
 export const QSTASH_TIMEOUT_MIN_MS = 60_000;
 export const QSTASH_TIMEOUT_MAX_MS = 15 * 60_000;
-const DURATION_UNIT_MS: Record<string, number> = { ns: 1e-6, us: 1e-3, 'µs': 1e-3, ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
-/** Go duration (already matched by GO_DURATION) to milliseconds. */
+const DURATION_UNIT_MS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000 };
+/** A `<number><s|m|h>` duration (already matched by QSTASH_DURATION) to milliseconds. */
 export function parseGoDurationMs(value: string): number {
-  let total = 0;
-  for (const [, amount, unit] of value.matchAll(/(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)/g)) total += Number(amount) * DURATION_UNIT_MS[unit!]!;
-  return total;
+  return Number(value.slice(0, -1)) * DURATION_UNIT_MS[value.slice(-1)]!;
 }
 const withinTimeoutBounds = (value: string) => {
   const ms = parseGoDurationMs(value);
@@ -36,7 +36,7 @@ export function isHttpsOrigin(value: string): boolean {
 }
 /** The shared check for QP_QSTASH_TIMEOUT, used by config and by the adapter constructor. */
 export function isQStashTimeout(value: string): boolean {
-  return GO_DURATION.test(value) && withinTimeoutBounds(value);
+  return QSTASH_DURATION.test(value) && withinTimeoutBounds(value);
 }
 /**
  * Redis connect timeout bounds (QP_REDIS_CONNECT_TIMEOUT_MS). Measured on Upstash free (ADR-019 spike, small
@@ -85,6 +85,8 @@ export function parseServiceAccount(raw: string, projectId: string): FirebaseSer
   const { type, project_id: keyProject, client_email: clientEmail, private_key: privateKey } = value as Record<string, unknown>;
   if (type !== 'service_account' || keyProject !== projectId || typeof clientEmail !== 'string' || !SERVICE_ACCOUNT_EMAIL.test(clientEmail)
       || typeof privateKey !== 'string' || !PRIVATE_KEY.test(privateKey)) throw invalid;
+  // A PEM with the right markers and a corrupted body would otherwise pass here and fail on the first Firestore call.
+  try { createPrivateKey(privateKey); } catch { throw invalid; }
   return { projectId, clientEmail, privateKey };
 }
 /** The configured service account, or undefined when none is set (the SDK then falls back to ambient credentials). */
@@ -130,9 +132,10 @@ const ConfigSchema = z.object({
   QSTASH_NEXT_SIGNING_KEY: z.string().optional(),
   // A regex, not z.coerce: an empty string would coerce to 0 retries silently.
   QP_QSTASH_RETRIES: z.string().regex(/^[0-3]$/).default('2').transform(Number),
-  QP_QSTASH_TIMEOUT: z.string().regex(GO_DURATION).refine(withinTimeoutBounds).default('90s'),
+  QP_QSTASH_TIMEOUT: z.string().regex(QSTASH_DURATION).refine(withinTimeoutBounds).default('90s'),
   // Checked in loadConfig, not with z.url(): a failure there must not carry the raw value.
-  QSTASH_URL: z.string().default(QSTASH_DEFAULT_URL),
+  // Blank counts as unset: a Render `sync: false` prompt left empty arrives as '', and it must not fail the boot.
+  QSTASH_URL: z.string().default(QSTASH_DEFAULT_URL).transform((value) => value.trim() === '' ? QSTASH_DEFAULT_URL : value),
 });
 export type Config = z.infer<typeof ConfigSchema>;
 
@@ -163,6 +166,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       throw new Error('QP_FIREBASE_SERVICE_ACCOUNT_JSON is not allowed with an emulator or a demo project');
     }
     configuredServiceAccount(config); // throws the constant message when the key is unusable
+  }
+  // Render sets RENDER and has no ambient Google identity: without a key every Firestore call would fail after boot.
+  // The Cloud Run path (RENDER unset) keeps its metadata identity. Constant message, no value.
+  if (config.QP_ENV === 'production' && isSet(env.RENDER) && !isSet(config.QP_FIREBASE_SERVICE_ACCOUNT_JSON)) {
+    throw new Error('QP_FIREBASE_SERVICE_ACCOUNT_JSON is required on this host');
   }
   if (config.QP_QUEUE_ADAPTER === 'cloud' && (!config.QP_TASKS_INVOKER_SA || !config.QP_TASKS_OIDC_AUDIENCE
       || workerUrl.protocol !== 'https:' || config.QP_TASKS_OIDC_AUDIENCE !== config.QP_WORKER_URL)) {
@@ -207,6 +215,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     }
   }
   return config;
+}
+
+/**
+ * Startup warnings for settings that are valid but probably not what the operator meant. Pure; the API logs them once at boot.
+ * An empty QP_CORS_ORIGINS under qstash (the free profile: Hosting and the API are different origins) leaves the API
+ * unusable from the browser without any error anywhere.
+ */
+export function configWarnings(config: Pick<Config, 'QP_ENV' | 'QP_QUEUE_ADAPTER' | 'QP_CORS_ORIGINS'>): string[] {
+  const warnings: string[] = [];
+  if (config.QP_ENV === 'production' && config.QP_QUEUE_ADAPTER === 'qstash' && config.QP_CORS_ORIGINS.length === 0) {
+    warnings.push('QP_CORS_ORIGINS is empty: a browser on another origin (Firebase Hosting) cannot call this API. Set it to the exact Hosting origin(s).');
+  }
+  return warnings;
 }
 
 /** Config safe to log or dump: credentials are replaced, everything else is unchanged. */

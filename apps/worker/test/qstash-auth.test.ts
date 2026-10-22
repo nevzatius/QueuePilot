@@ -264,6 +264,18 @@ describe('worker routes under QStash auth', () => {
     expect((await app.inject({ method: 'GET', url: '/ready' })).statusCode).toBe(200);
     await app.close();
   });
+  it('/ready calls the store (one Firestore read with the service-account credential) and answers 503 without detail when it fails; /health never calls it', async () => {
+    const health = vi.fn(async () => { throw new Error('FAKE-credential-detail 16 UNAUTHENTICATED'); });
+    const app = buildWorkerApp({ verifier: createCallerVerifier(loadConfig(PROD_QSTASH), clock), store: { health } as never,
+      worker: { deliver: vi.fn() } as never, reconciler: { run: vi.fn() } as never, logStream: { write: () => {} } });
+    expect((await app.inject({ method: 'GET', url: '/health' })).statusCode).toBe(200);
+    expect(health).not.toHaveBeenCalled();
+    const response = await app.inject({ method: 'GET', url: '/ready' });
+    expect(health).toHaveBeenCalledTimes(1);
+    expect(response.statusCode).toBe(503);
+    expect(response.body).not.toContain('FAKE-credential-detail');
+    await app.close();
+  });
   it('Host and X-Forwarded-* headers cannot change the expected sub', async () => {
     const { app, worker } = harness();
     const body = JSON.stringify(payload());

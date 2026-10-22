@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CORS_ORIGINS_MAX, loadConfig, REDIS_CONNECT_TIMEOUT_DEFAULT_MS, REDIS_CONNECT_TIMEOUT_MAX_MS, REDIS_CONNECT_TIMEOUT_MIN_MS,
+  configWarnings, CORS_ORIGINS_MAX, loadConfig, REDIS_CONNECT_TIMEOUT_DEFAULT_MS, REDIS_CONNECT_TIMEOUT_MAX_MS, REDIS_CONNECT_TIMEOUT_MIN_MS,
 } from '@queuepilot/core';
 
 const WEB = 'https://queuepilot-demo.web.app';
@@ -98,5 +98,23 @@ describe('QP_REDIS_CONNECT_TIMEOUT_MS', () => {
     const COMMAND_MS = 100;
     expect(2 * (REDIS_CONNECT_TIMEOUT_DEFAULT_MS + COMMAND_MS)).toBeLessThan(5_000);
     expect(2 * (REDIS_CONNECT_TIMEOUT_MAX_MS + COMMAND_MS)).toBeLessThan(15_000 / 2);
+  });
+});
+
+describe('configWarnings (blank QP_CORS_ORIGINS on the free profile)', () => {
+  const QSTASH_PRODUCTION: Record<string, string> = { QP_ENV: 'production', GCLOUD_PROJECT: 'real-project', QP_QUEUE_ADAPTER: 'qstash', QP_WORKER_URL: 'https://worker.example.test',
+    REDIS_URL: 'rediss://redis.invalid:6380', QSTASH_TOKEN: 'FAKE-t', QSTASH_CURRENT_SIGNING_KEY: 'FAKE-c', QSTASH_NEXT_SIGNING_KEY: 'FAKE-n' };
+  it('warns once, without any value, when production uses qstash and no origin is allowed: the config itself stays valid', () => {
+    for (const blank of [undefined, '', '   ']) {
+      const config = loadConfig({ ...QSTASH_PRODUCTION, ...(blank === undefined ? {} : { QP_CORS_ORIGINS: blank }) });
+      const warnings = configWarnings(config);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('QP_CORS_ORIGINS is empty');
+    }
+  });
+  it('is silent when an origin is set, outside production and for the Cloud Tasks backend', () => {
+    expect(configWarnings(loadConfig({ ...QSTASH_PRODUCTION, QP_CORS_ORIGINS: WEB }))).toEqual([]);
+    expect(configWarnings(loadConfig({ QP_ENV: 'test' }))).toEqual([]);
+    expect(configWarnings(loadConfig(PRODUCTION))).toEqual([]);
   });
 });

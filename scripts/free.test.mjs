@@ -21,7 +21,8 @@ test('render.yaml parses with the strict reader and has the expected shape', () 
   assert.deepEqual(Object.keys(blueprint), ['services']);
   assert.deepEqual(blueprint.services.map((s) => s.name), ['queuepilot-api', 'queuepilot-worker']);
   for (const service of blueprint.services) {
-    assert.deepEqual([service.type, service.runtime, service.plan, service.region, service.autoDeploy, service.healthCheckPath], ['web', 'docker', 'free', 'frankfurt', false, '/health']);
+    assert.deepEqual([service.type, service.runtime, service.plan, service.region, service.autoDeployTrigger, service.healthCheckPath], ['web', 'docker', 'free', 'frankfurt', 'off', '/health']);
+    assert.ok(!Object.hasOwn(service, 'autoDeploy'), 'the deprecated autoDeploy is gone');
   }
 });
 
@@ -77,11 +78,16 @@ const replaceOnce = (from, to) => (text) => { assert.ok(text.includes(from), fro
 const renderMutations = {
   'a paid plan': replaceOnce('plan: free', 'plan: starter'),
   'a paid plan on the second service only': (text) => { const i = text.lastIndexOf('plan: free'); return `${text.slice(0, i)}plan: standard${text.slice(i + 'plan: free'.length)}`; },
-  'a disk': replaceOnce('    healthCheckPath: /health\n    autoDeploy: false\n    envVars:\n      - key: QP_ENV', '    healthCheckPath: /health\n    autoDeploy: false\n    disk:\n      name: d\n      sizeGB: 1\n    envVars:\n      - key: QP_ENV'),
+  'a disk': replaceOnce('    healthCheckPath: /health\n    autoDeployTrigger: off\n    envVars:\n      - key: QP_ENV', '    healthCheckPath: /health\n    autoDeployTrigger: off\n    disk:\n      name: d\n      sizeGB: 1\n    envVars:\n      - key: QP_ENV'),
   'a database': (text) => `${text}\ndatabases:\n  - name: db\n    plan: free\n`,
   'a background worker type': replaceOnce('type: web\n    name: queuepilot-worker', 'type: worker\n    name: queuepilot-worker'),
   'another region': replaceOnce('region: frankfurt', 'region: oregon'),
-  'autoDeploy on': replaceOnce('autoDeploy: false', 'autoDeploy: true'),
+  'autoDeployTrigger commit': replaceOnce('autoDeployTrigger: off', 'autoDeployTrigger: commit'),
+  'autoDeployTrigger checksPass': replaceOnce('autoDeployTrigger: off', 'autoDeployTrigger: checksPass'),
+  'autoDeployTrigger missing': replaceOnce('    autoDeployTrigger: off\n', ''),
+  'the deprecated autoDeploy next to the trigger': replaceOnce('    autoDeployTrigger: off\n', '    autoDeployTrigger: off\n    autoDeploy: false\n'),
+  'a quoted paid plan': replaceOnce('plan: free', 'plan: "starter"'),
+  'a single-quoted paid plan on the second service': (text) => { const i = text.lastIndexOf('plan: free'); return `${text.slice(0, i)}plan: 'pro'${text.slice(i + 'plan: free'.length)}`; },
   'a missing health check': replaceOnce('    healthCheckPath: /health\n', ''),
   'TRUST_PROXY_HOPS 0': replaceOnce('value: "3"', 'value: "0"'),
   'TRUST_PROXY_HOPS 2': replaceOnce('value: "3"', 'value: "2"'),
@@ -157,6 +163,9 @@ test('free preflight: the two services must agree on the worker URL when it is f
   assert.equal(status(free({ 'render.yaml': filled('qp-worker', 'qp-other') }), 'free-render'), 'FAIL');
 });
 
+/** The `**` header rule with one header replaced (value undefined removes it). */
+const withShellHeader = (config, key, value) => ({ ...config, hosting: { ...config.hosting, headers: config.hosting.headers.map((rule) => (rule.source !== '**' ? rule
+  : { ...rule, headers: [...rule.headers.filter((h) => h.key !== key), ...(value === undefined ? [] : [{ key, value }])] })) } });
 const firebaseMutations = {
   'Functions': (c) => ({ ...c, functions: { source: 'functions' } }),
   'Storage': (c) => ({ ...c, storage: { rules: 'storage.rules' } }),
@@ -168,6 +177,19 @@ const firebaseMutations = {
   'no Firestore rules file': (c) => ({ ...c, firestore: { indexes: c.firestore.indexes } }),
   'a missing rules file': (c) => ({ ...c, firestore: { ...c.firestore, rules: 'infra/nope.rules' } }),
   'an emulator on all interfaces': (c) => ({ ...c, emulators: { ...c.emulators, firestore: { host: '0.0.0.0', port: 8080 } } }),
+  'the paid-path indexes file (TTL overrides)': (c) => ({ ...c, firestore: { ...c.firestore, indexes: 'infra/firestore.indexes.json' } }),
+  'no ** header rule': (c) => ({ ...c, hosting: { ...c.hosting, headers: c.hosting.headers.filter((rule) => rule.source !== '**') } }),
+  'a COOP value that breaks the popup': (c) => withShellHeader(c, 'Cross-Origin-Opener-Policy', 'same-origin'),
+  'no COOP header': (c) => withShellHeader(c, 'Cross-Origin-Opener-Policy', undefined),
+  'a weaker X-Frame-Options': (c) => withShellHeader(c, 'X-Frame-Options', 'SAMEORIGIN'),
+  'no nosniff': (c) => withShellHeader(c, 'X-Content-Type-Options', undefined),
+  'no Permissions-Policy': (c) => withShellHeader(c, 'Permissions-Policy', undefined),
+  'a cacheable SPA shell (no Cache-Control on **)': (c) => withShellHeader(c, 'Cache-Control', undefined),
+  'a long-lived Cache-Control on **': (c) => withShellHeader(c, 'Cache-Control', 'public, max-age=31536000, immutable'),
+  'a Cache-Control rule on /index.html only': (c) => ({ ...c, hosting: { ...c.hosting, headers: [{ ...c.hosting.headers[0], headers: c.hosting.headers[0].headers.filter((h) => h.key !== 'Cache-Control') }, c.hosting.headers[1],
+    { source: '/index.html', headers: [{ key: 'Cache-Control', value: 'no-cache' }] }] } }),
+  'a non-immutable /assets/** rule': (c) => ({ ...c, hosting: { ...c.hosting, headers: c.hosting.headers.map((rule) => (rule.source === '/assets/**' ? { ...rule, headers: [{ key: 'Cache-Control', value: 'no-cache' }] } : rule)) } }),
+  'the /assets/** rule before the ** rule': (c) => ({ ...c, hosting: { ...c.hosting, headers: [...c.hosting.headers].reverse() } }),
 };
 for (const [label, mutate] of Object.entries(firebaseMutations)) {
   test(`free preflight: firebase.json with ${label} FAILS`, () => {
@@ -176,9 +198,70 @@ for (const [label, mutate] of Object.entries(firebaseMutations)) {
 }
 
 test('free preflight: weakened Firestore rules FAIL, the deny-all rules pass', () => {
+  const rules = real('infra/firestore.rules');
   assert.equal(status(free({ 'infra/firestore.rules': 'service cloud.firestore { match /{d=**} { allow read, write: if true; } }' }), 'free-firebase'), 'FAIL');
   assert.equal(status(free({ 'infra/firestore.rules': 'service cloud.firestore { match /{d=**} { allow read: if request.auth != null; } }' }), 'free-firebase'), 'FAIL');
+  // Anything that is not the canonical text FAILS, including edits a pattern would let through.
+  for (const weakened of [rules.replace('if false', 'if request.time < timestamp.date(2100, 1, 1)'), rules.replace('allow read, write: if false;', 'allow read: if false;'),
+    rules.replace('match /{document=**} {', 'match /{document=**} {\n      allow get: if true;'), `${rules}\nmatch /extra/{id} { allow read: if true; }`,
+    rules.replace('allow read, write: if false;', 'allow read, write: if false; allow list: if true;'), '', rules.replace("'2'", "'1'")]) {
+    assert.equal(status(free({ 'infra/firestore.rules': weakened }), 'free-firebase'), 'FAIL', weakened);
+  }
+  // Comments and whitespace do not matter.
+  assert.equal(status(free({ 'infra/firestore.rules': `// note\n${rules.replace(/\n\s*/g, '\n\n   ')}// if true\n` }), 'free-firebase'), 'PASS');
   assert.equal(status(free(), 'free-firebase'), 'PASS');
+});
+
+// ---- TTL needs billing (F1) ----
+const indexes = (mutate) => ({ 'infra/firestore.indexes.free.json': JSON.stringify(mutate(JSON.parse(real('infra/firestore.indexes.free.json'))), null, 2) });
+
+test('free indexes file: the same composite indexes as the paid file, the field overrides minus every ttl override', () => {
+  const paid = JSON.parse(real('infra/firestore.indexes.json'));
+  const freeFile = JSON.parse(real('infra/firestore.indexes.free.json'));
+  assert.deepEqual(freeFile.indexes, paid.indexes);
+  assert.deepEqual(freeFile.fieldOverrides, paid.fieldOverrides.filter((entry) => !('ttl' in entry)));
+  assert.ok(paid.fieldOverrides.filter((entry) => entry.ttl === true).length === 3, 'the paid path keeps its three TTL overrides');
+  assert.ok(!JSON.stringify(freeFile).includes('ttl'));
+  assert.equal(JSON.parse(real('firebase.json')).firestore.indexes, 'infra/firestore.indexes.free.json');
+});
+
+test('free preflight: a ttl override in the indexes file that firebase.json references FAILS (parsed, not matched)', () => {
+  const ttl = (entry) => indexes((file) => ({ ...file, fieldOverrides: [...file.fieldOverrides, entry] }));
+  const reasons = (results) => results.find((r) => r.id === 'free-firebase').detail;
+  const withTtl = free(ttl({ collectionGroup: 'events', fieldPath: 'expiresAt', ttl: true, indexes: [] }));
+  assert.equal(status(withTtl, 'free-firebase'), 'FAIL');
+  assert.match(reasons(withTtl), /ttl override: Firestore TTL deletes need billing/);
+  assert.equal(summarize(withTtl).exitCode, 1);
+  // Spelling does not matter, because the file is parsed: no space, nested, reordered keys, a non-boolean value.
+  for (const raw of ['{"indexes":[],"fieldOverrides":[{"ttl":true,"fieldPath":"expiresAt","collectionGroup":"events","indexes":[]}]}',
+    '{"indexes":[],"fieldOverrides":[{"collectionGroup":"events","fieldPath":"expiresAt","ttl":"true","indexes":[]}]}',
+    '{"indexes":[{"nested":{"ttl":true}}],"fieldOverrides":[]}']) {
+    assert.equal(status(free({ 'infra/firestore.indexes.free.json': raw }), 'free-firebase'), 'FAIL', raw);
+  }
+  assert.equal(status(free({ 'infra/firestore.indexes.free.json': '{not json' }), 'free-firebase'), 'FAIL');
+  // ttl:false and a field named like ttl inside a string are not TTL overrides.
+  assert.equal(status(free(ttl({ collectionGroup: 'events', fieldPath: 'ttl', ttl: false, indexes: [] })), 'free-firebase'), 'PASS');
+  // Pointing firebase.json at the paid-path file (which has TTL) FAILS; the file itself is untouched by the free path.
+  assert.equal(status(free(firebase((c) => ({ ...c, firestore: { ...c.firestore, indexes: 'infra/firestore.indexes.json' } }))), 'free-firebase'), 'FAIL');
+  assert.equal(status(free(), 'free-firebase'), 'PASS');
+});
+
+test('free preflight: a plan written with quotes is read like the bare one', () => {
+  assert.equal(status(free(render(replaceOnce('plan: free', 'plan: "free"'))), 'free-render'), 'PASS');
+  assert.equal(status(free(render((text) => text.replaceAll('plan: free', "plan: 'free'"))), 'free-render'), 'PASS');
+});
+
+test('free preflight: a secret declared with a loose "sync" value FAILS (only the boolean false passes)', () => {
+  for (const loose of ['0', '""', '"0"', '"false"', '"False"', 'no', 'off', 'null', '1', 'true', '~', '[]']) {
+    for (const name of SECRET_ENV) {
+      const results = free(render(replaceOnce(`      - key: ${name}\n        sync: false`, `      - key: ${name}\n        sync: ${loose}`)));
+      assert.ok(['free-render', 'free-render-syntax'].some((id) => status(results, id) === 'FAIL'), `${name} with sync: ${loose}`);
+    }
+  }
+  // The same for a non-secret owner value.
+  for (const loose of ['0', '""', '"false"']) {
+    assert.equal(status(free(render(replaceOnce('      - key: QP_CORS_ORIGINS\n        sync: false', `      - key: QP_CORS_ORIGINS\n        sync: ${loose}`))), 'free-render'), 'FAIL', loose);
+  }
 });
 
 test('free preflight: .firebaserc must name a project; a demo project fails, a real-looking one passes', () => {

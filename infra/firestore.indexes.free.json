@@ -1,0 +1,30 @@
+{
+  "indexes": [
+    { "collectionGroup": "requests", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "tenantId", "order": "ASCENDING" },
+      { "fieldPath": "createdBy", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ] },
+    { "collectionGroup": "requests", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "tenantId", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ] },
+    { "collectionGroup": "requests", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "watchdogShard", "order": "ASCENDING" },
+      { "fieldPath": "watchdogAt", "order": "ASCENDING" }
+    ] }
+  ],
+  "fieldOverrides": [
+    { "collectionGroup": "requests", "fieldPath": "createdAt", "indexes": [] },
+    { "collectionGroup": "requests", "fieldPath": "updatedAt", "indexes": [] },
+    { "collectionGroup": "requests", "fieldPath": "startedAt", "indexes": [] },
+    { "collectionGroup": "requests", "fieldPath": "completedAt", "indexes": [] },
+    { "collectionGroup": "requests", "fieldPath": "watchdogAt", "indexes": [] },
+    { "collectionGroup": "requests", "fieldPath": "title", "indexes": [] },
+    { "collectionGroup": "requests", "fieldPath": "description", "indexes": [] },
+    { "collectionGroup": "requests", "fieldPath": "attributes", "indexes": [] },
+    { "collectionGroup": "requests", "fieldPath": "result", "indexes": [] },
+    { "collectionGroup": "requests", "fieldPath": "processing", "indexes": [] },
+    { "collectionGroup": "requests", "fieldPath": "dispatch", "indexes": [] }
+  ]
+}

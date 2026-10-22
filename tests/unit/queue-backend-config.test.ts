@@ -41,17 +41,20 @@ describe('queue backend selection', () => {
     expect(() => loadConfig({ ...PROD_QSTASH, QP_QSTASH_RETRIES: value })).toThrow();
   });
 
-  it.each(['60s', '1m30s', '15m', '900s', '1m', '14m59s'])('accepts timeout %s', (value) => {
+  it.each(['60s', '90s', '5m', '15m', '900s', '1m', '899s'])('accepts timeout %s', (value) => {
     expect(loadConfig({ ...PROD_QSTASH, QP_QSTASH_TIMEOUT: value }).QP_QSTASH_TIMEOUT).toBe(value);
   });
 
-  it.each(['59s', '59999ms', '16m', '1h30m', '2h', '1ms', '1ns', '99999999999999h'])('rejects timeout outside 60s..15m: %s', (value) => {
+  it.each(['59s', '16m', '901s', '2h', '1h', '0m', '99999999999999h'])('rejects timeout outside 60s..15m: %s', (value) => {
     expect(() => loadConfig({ ...PROD_QSTASH, QP_QSTASH_TIMEOUT: value })).toThrow(/Invalid API configuration/);
   });
 
-  it('1h30m is 90 minutes, above the 15 minute ceiling, and must not be read as 90 seconds', () => {
-    expect(parseGoDurationMs('1h30m')).toBe(90 * 60_000);
-    expect(() => loadConfig({ ...PROD_QSTASH, QP_QSTASH_TIMEOUT: '1h30m' })).toThrow();
+  it.each(['1m30s', '1h30m', '90000ms', '59999ms', '1.5s', '1.5m', '1ms', '1ns', '1us', '90S', ' 90s', '90s ', '+90s'])('rejects what QStash does not document, only <number><s|m|h> is accepted: %j', (value) => {
+    expect(() => loadConfig({ ...PROD_QSTASH, QP_QSTASH_TIMEOUT: value })).toThrow(/Invalid API configuration/);
+  });
+
+  it('parses the three documented units', () => {
+    expect([parseGoDurationMs('90s'), parseGoDurationMs('5m'), parseGoDurationMs('1h')]).toEqual([90_000, 300_000, 3_600_000]);
   });
 
   it.each(['60', '1.5', '60 s', 's', '', '0s', '-5s', '10d'])('rejects timeout without a valid unit: %j', (value) => {
@@ -272,12 +275,17 @@ describe('QSTASH_URL', () => {
   it.each([
     ['http', 'http://qstash.upstash.io'], ['a path', 'https://qstash.upstash.io/v2'], ['a trailing slash', 'https://qstash.upstash.io/'],
     ['a query', 'https://qstash.upstash.io?x=1'], ['credentials', 'https://user:FAKE-url-pass-3c9d21@qstash.upstash.io'],
-    ['no scheme', 'qstash.upstash.io'], ['empty', ''], ['ftp', 'ftp://qstash.upstash.io'],
+    ['no scheme', 'qstash.upstash.io'], ['ftp', 'ftp://qstash.upstash.io'], ['padding', ' https://qstash.upstash.io'],
   ])('rejects %s without echoing the value', (_label, url) => {
     let message = '';
     try { loadConfig({ ...PROD_QSTASH, QSTASH_URL: url }); } catch (error) { message = `${(error as Error).message}${(error as Error).stack ?? ''}`; }
     expect(message).toMatch(/QSTASH_URL must be an https origin/);
     expect(message).not.toContain('FAKE-url-pass-3c9d21');
+  });
+  it.each(['', ' ', '\t'])('treats a blank value %j as the default (an empty Render prompt arrives as an empty string)', (blank) => {
+    expect(loadConfig({ ...PROD_QSTASH, QSTASH_URL: blank }).QSTASH_URL).toBe('https://qstash.upstash.io');
+    expect(loadConfig({ QP_QUEUE_ADAPTER: 'qstash', ...QSTASH, QSTASH_URL: blank }).QSTASH_URL).toBe('https://qstash.upstash.io');
+    expect(loadConfig({ ...PROD_CLOUD, QSTASH_URL: blank }).QSTASH_URL).toBe('https://qstash.upstash.io'); // blank is not a mixed-backend setting
   });
   it('is validated outside production and for the other backends too', () => {
     expect(() => loadConfig({ QSTASH_URL: 'http://qstash.upstash.io' })).toThrow(/QSTASH_URL/);

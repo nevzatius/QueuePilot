@@ -56,8 +56,8 @@ describe('QStashQueue publish request', () => {
 
   it('sends the configured retries and the timeout with its unit', async () => {
     const send = replying(respond(201));
-    await fixture(send, { retries: 0, timeout: '1m30s' }).queue.enqueue(payload(), signal());
-    expect(send.mock.calls[0]![1].headers).toMatchObject({ 'Upstash-Retries': '0', 'Upstash-Timeout': '1m30s' });
+    await fixture(send, { retries: 0, timeout: '5m' }).queue.enqueue(payload(), signal());
+    expect(send.mock.calls[0]![1].headers).toMatchObject({ 'Upstash-Retries': '0', 'Upstash-Timeout': '5m' });
   });
 
   it('keeps the token in the Authorization header only', async () => {
@@ -294,6 +294,9 @@ describe('QStashQueue secrets hygiene', () => {
     ['timeout without a unit', { timeout: '90' }],
     ['timeout below the floor', { timeout: '10s' }],
     ['timeout above the ceiling', { timeout: '16m' }],
+    ['timeout as a compound duration', { timeout: '1m30s' }],
+    ['timeout in milliseconds', { timeout: '90000ms' }],
+    ['timeout with a fraction', { timeout: '1.5s' }],
     ['empty token', { token: '' }],
     ['token with whitespace', { token: `${TOKEN} extra` }],
     ['token with a newline', { token: `${TOKEN}\nX-Injected: 1` }],

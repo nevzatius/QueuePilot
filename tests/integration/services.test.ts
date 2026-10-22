@@ -17,6 +17,12 @@ describe('local integration infrastructure', () => {
     const url = `http://${host}/v1/projects/demo-queuepilot/databases/(default)/documents/foundation/${randomUUID()}`;
     // firebase.json loads the deny-all rules (as in production); the emulator's owner token bypasses them like the Admin SDK does.
     const owner = { authorization: 'Bearer owner' };
+    // Without the owner token the same document is denied, for reads and writes: this is what proves the rules are loaded and deny-all
+    // (the owner calls below would succeed with or without rules).
+    const denied = await fetch(url);
+    expect(denied.status).toBe(403);
+    const deniedWrite = await fetch(url, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fields: { check: { stringValue: 'anonymous' } } }) });
+    expect(deniedWrite.status).toBe(403);
     try {
       const write = await fetch(url, {
         method: 'PATCH',
