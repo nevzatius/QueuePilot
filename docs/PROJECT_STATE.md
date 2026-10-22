@@ -1,11 +1,11 @@
 # Project State
 
 Single writer: Claude Code (ADR-013). Keep this file under 60 lines.
-Last updated: 2026-10-22, by Claude Code (B9-7: free-tier deployment files and scripts, branch `claude/b9-7-free-deploy-files`, PR open).
+Last updated: 2026-10-22, by Claude Code (B9-7 merged as PR #8; B9-7 review fixes on `claude/b9-7-review-fixes`, PR open).
 
 ## Phase
 
-Architecture v0.2 frozen (ADR-009 to ADR-018), plus ADR-019 (free-tier platform, amended 2026-10-22). `main` = `d902add`: B1-B6, B7 and B9-0 to B9-4, B9-6 are in.
+Architecture v0.2 frozen (ADR-009 to ADR-018), plus ADR-019 (free-tier platform, amended 2026-10-22). `main` = `2273e73`: B1-B6, B7 and B9-0 to B9-4, B9-6, B9-7 are in.
 Remote: private `github.com/nevzatius/QueuePilot`. No cloud resource exists. The local MVP works end to end on emulators.
 The owner has no billing account, so the target is free tiers only: Firebase Spark + Render free + Upstash QStash + Upstash Redis `queuepilot`.
 Cloud Tasks stays supported behind the queue factory. Owner runbook: `docs/DEPLOYMENT_RUNBOOK.md` ("Free-tier path" first, GCP path after it).
@@ -26,12 +26,13 @@ Cloud Tasks stays supported behind the queue factory. Owner runbook: `docs/DEPLO
 
 Merged: B9-1 config/production guard/factory, B9-2 `QStashQueue`, B9-3 worker QStash verifier, B9-4 CORS + `TRUST_PROXY_HOPS` + Redis connect timeout, B9-6 web.
 **B9-5 is only partly done**: the Redis connect timeout landed in B9-4; `count()` stuck counts, the time-based reconcile throttle (also for `/internal/reconcile`) and `RESOURCE_EXHAUSTED` classification are open (TASKS "B9-5 must").
-B9-7 (this PR): `render.yaml`, `firebase.json`, QStash setup/shutdown scripts, `preflight --profile free`, `seed-demo --profile free`, `QP_FIREBASE_SERVICE_ACCOUNT_JSON`, runbook free-tier section (covers the B9-8 runbook acceptance).
-B9-9: owner manual setup and live verification (checklists in TASKS.md, "B9-9 live checks").
+B9-7 merged (PR #8): `render.yaml`, `firebase.json`, QStash setup/shutdown scripts, `preflight --profile free`, `seed-demo --profile free`, `QP_FIREBASE_SERVICE_ACCOUNT_JSON`, runbook free-tier section (covers the B9-8 runbook acceptance).
+B9-7 review fixes (open PR): free indexes file without TTL, `RENDER` requires the service-account key, QStash timeout never claimed current, `<n><s|m|h>` timeouts, Hosting cache headers, `autoDeployTrigger: off`, runbook prerequisites and shutdown, nested log redaction.
+B9-9 (next): owner manual setup and live verification (checklists in TASKS.md, "B9-9 live checks").
 
 ## Checks
 
-B9-7 branch, 2026-10-22: lint, typecheck, test, build; results in the PR. Images are smoke-run in CI only. Nothing was run against Render, Firebase or Upstash.
+B9-7 review-fix branch, 2026-10-22: lint, typecheck, test, build and `preflight --profile free` (no FAIL); results in the PR. The services emulator test ran locally. Images are smoke-run in CI only. Nothing was run against Render, Firebase or Upstash.
 
 ## Blockers (owner actions)
 
@@ -55,4 +56,4 @@ T3 `.claude/agents/architecture-reviewer.md` is stale against ADR-017; T4 stale 
 
 ## Next step
 
-1. Review and merge the B9-7 PR. 2. Decide whether to finish the B9-5 remainder before the live run (recommended: it protects the Spark read budget). 3. Owner: B9-9, following the runbook free-tier path in order, then record the live checks in TASKS.md.
+1. Review and merge the B9-7 review-fix PR. 2. Decide whether to finish the B9-5 remainder before the live run (recommended: it protects the Spark read budget). 3. Owner: B9-9, following the runbook free-tier path from step 0 in order, then record the live checks in TASKS.md.

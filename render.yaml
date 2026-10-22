@@ -1,7 +1,8 @@
 # Render Blueprint for the free-tier deployment (ADR-019). Read docs/DEPLOYMENT_RUNBOOK.md, "Free-tier path", first.
 #
 # Free plan only: two web services, no disk, no database, no cron job, no background worker (those are paid).
-# autoDeploy is off: nothing deploys until the owner clicks "Manual Deploy". No value below is a secret or a real
+# autoDeployTrigger is off (it replaces the deprecated autoDeploy: false, Render Blueprint spec): nothing deploys until
+# the owner clicks "Manual Deploy". No value below is a secret or a real
 # URL: every owner-specific value is declared with `sync: false`, which makes Render ask for it in the dashboard
 # when the Blueprint is created. Never type a secret into this file, a chat or a commit.
 #
@@ -21,7 +22,7 @@ services:
     dockerfilePath: ./apps/api/Dockerfile
     dockerContext: .
     healthCheckPath: /health
-    autoDeploy: false
+    autoDeployTrigger: off
     envVars:
       - key: QP_ENV
         value: production
@@ -68,7 +69,7 @@ services:
     dockerfilePath: ./apps/worker/Dockerfile
     dockerContext: .
     healthCheckPath: /health
-    autoDeploy: false
+    autoDeployTrigger: off
     envVars:
       - key: QP_ENV
         value: production

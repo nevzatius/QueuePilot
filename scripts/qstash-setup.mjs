@@ -1,14 +1,16 @@
 /* global fetch */
 import { pathToFileURL } from 'node:url';
 import { EXIT, ScriptError, parseOptions, runCli } from './lib/ops.mjs';
-import { QStashRest, checkApproval, describeIds, forDestination, isCurrent, readToken, resolveSettings } from './lib/qstash.mjs';
+import { QStashRest, checkApproval, describeIds, forDestination, isCurrent, listedSettingsMatch, readToken, resolveSettings, timeoutIsListed } from './lib/qstash.mjs';
 
 // Creates or updates the QStash schedule that ticks the reconciler every 60 minutes (ADR-019): a POST to
 // ${QP_WORKER_URL}/internal/reconcile. Idempotent: an existing schedule for that destination is updated in
-// place or left alone, never duplicated. Dry run is the default (ADR-016); the only call it can make is one
+// place (same id, Upstash-Schedule-Id upsert) or left alone, never duplicated. The QStash listing does not show a
+// schedule's timeout, so an existing schedule is "unchanged" only when everything the listing shows matches AND it
+// shows a timeout equal to the wanted one; in practice every apply rewrites it in place. Dry run is the default (ADR-016); the only call it can make is one
 // read-only listing, and none at all when QSTASH_TOKEN is not set.
 //
-//   QP_WORKER_URL=https://<worker origin> QSTASH_TOKEN=... [QSTASH_URL=https://<region>.qstash.upstash.io]
+//   QP_WORKER_URL=https://<worker origin> QSTASH_TOKEN=... [QSTASH_URL=https://qstash-<region>.upstash.io]
 //   node scripts/qstash-setup.mjs [--retries 2] [--timeout 90s]                               (dry run)
 //   node scripts/qstash-setup.mjs --apply --approve-destination https://<worker origin>/internal/reconcile
 //
@@ -47,6 +49,7 @@ export async function runSetup(values, deps) {
   const action = existing === undefined ? 'create' : unchanged ? 'unchanged' : 'update';
   if (!apply) {
     io.out(`Would ${action === 'unchanged' ? 'leave the existing schedule unchanged' : action === 'create' ? 'create the schedule' : `update schedule ${describeIds(matches)} in place`}.`);
+    if (existing !== undefined && !timeoutIsListed(existing)) io.out('The QStash listing does not show a schedule timeout, so it cannot be compared and is always written (same id, no duplicate).');
     io.out('Nothing was written. Writes need --apply and --approve-destination=<destination>.');
     return EXIT.OK;
   }
@@ -57,10 +60,10 @@ export async function runSetup(values, deps) {
   const scheduleId = await client.upsert(settings, existing?.scheduleId);
   io.out(`schedule ${scheduleId ?? '(id not returned)'}: ${action === 'create' ? 'created' : 'updated'}`);
   const after = forDestination(await client.list(), settings.destination);
-  if (after.length !== 1 || !isCurrent(after[0], settings)) {
-    throw new ScriptError(EXIT.STATE, 'The re-read does not show exactly one schedule with the wanted settings; inspect it in the Upstash console before rerunning');
+  if (after.length !== 1 || !listedSettingsMatch(after[0], settings)) {
+    throw new ScriptError(EXIT.STATE, 'The re-read does not show exactly one schedule with the wanted settings (timeout excepted: the listing cannot show it); inspect it in the Upstash console before rerunning');
   }
-  io.out('Confirmed by re-read: exactly one schedule for the destination with the wanted settings.');
+  io.out('Confirmed by re-read: exactly one schedule for the destination with the wanted cron, method, retries and not paused. The listing cannot show the timeout; check it in the Upstash console if it matters.');
   return EXIT.OK;
 }
 
