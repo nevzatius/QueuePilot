@@ -1,6 +1,18 @@
+import type { Clock } from '@queuepilot/domain';
 import type { Config } from '../config.js';
+import { QStashCallerVerifier } from './qstash-auth.js';
+import type { DeliveryEvidence, VerifyOutcome, WorkerCaller } from './qstash-auth.js';
 
-export interface CallerVerifier { verify(authorization: string | undefined, caller: 'tasks' | 'scheduler'): Promise<boolean> }
+export interface CallerVerifier { verify(authorization: string | undefined, caller: WorkerCaller): Promise<boolean> }
+/**
+ * A verifier that authenticates the delivery itself (signature over the raw body) instead of a bearer token.
+ * The worker keeps the raw bytes for its routes, calls `check` before parsing, and answers `rejectStatus`.
+ */
+export interface DeliveryVerifier extends CallerVerifier {
+  readonly rejectStatus: 401;
+  check(evidence: DeliveryEvidence, caller: WorkerCaller): VerifyOutcome;
+}
+export const isDeliveryVerifier = (verifier: CallerVerifier): verifier is DeliveryVerifier => 'check' in verifier && typeof verifier.check === 'function';
 type Claims = { email?: string; email_verified?: boolean; iss?: string; aud?: string };
 export type VerifyIdToken = (token: string, audience: string) => Promise<Claims | undefined>;
 let googleVerifier: Promise<import('google-auth-library').OAuth2Client> | undefined;
@@ -13,7 +25,7 @@ export class OidcCallerVerifier implements CallerVerifier {
   constructor(private readonly config: Config, private readonly verifyToken: VerifyIdToken = verifyGoogleToken) {
     if (!config.QP_TASKS_OIDC_AUDIENCE || !config.QP_TASKS_INVOKER_SA) throw new Error('OIDC audience and caller required');
   }
-  async verify(authorization: string | undefined, caller: 'tasks' | 'scheduler') {
+  async verify(authorization: string | undefined, caller: WorkerCaller) {
     if (!authorization || !/^Bearer [^\s]+$/.test(authorization)) return false;
     try {
       const audience = this.config.QP_TASKS_OIDC_AUDIENCE!;
@@ -26,7 +38,12 @@ export class OidcCallerVerifier implements CallerVerifier {
   }
 }
 
-export function createCallerVerifier(config: Config): CallerVerifier {
+export function createCallerVerifier(config: Config, clock?: Clock): CallerVerifier {
+  if (config.QP_WORKER_AUTH_MODE === 'qstash') {
+    // Defence in depth when a manually constructed Config bypasses loadConfig: the OIDC settings are not needed here.
+    if (config.QP_QUEUE_ADAPTER !== 'qstash') throw new Error('Worker auth mode does not match the queue backend');
+    return new QStashCallerVerifier(config, clock);
+  }
   if (config.QP_WORKER_AUTH_MODE !== 'local') return new OidcCallerVerifier(config);
   // Defence in depth when a manually constructed Config bypasses loadConfig.
   if (config.QP_ENV === 'production' || config.QP_QUEUE_ADAPTER !== 'local' || !config.GCLOUD_PROJECT.startsWith('demo-')

@@ -96,6 +96,65 @@ describe('queue backend selection', () => {
   });
 });
 
+const MISMATCH = /^Worker auth mode does not match the queue backend$/;
+
+describe('worker auth mode follows the queue backend', () => {
+  it.each([
+    ['production qstash, unset', PROD_QSTASH, 'qstash'],
+    ['production qstash, explicit', { ...PROD_QSTASH, QP_WORKER_AUTH_MODE: 'qstash' }, 'qstash'],
+    ['development qstash, unset', { QP_QUEUE_ADAPTER: 'qstash', ...QSTASH }, 'qstash'],
+    ['production cloud, unset', PROD_CLOUD, 'oidc'],
+    ['production cloud, explicit', { ...PROD_CLOUD, QP_WORKER_AUTH_MODE: 'oidc' }, 'oidc'],
+    ['development local, unset', {}, 'oidc'],
+  ])('%s', (_label, env, mode) => {
+    expect(loadConfig(env).QP_WORKER_AUTH_MODE).toBe(mode);
+  });
+
+  it('qstash does not require or accept the OIDC settings', () => {
+    const config = loadConfig(PROD_QSTASH);
+    expect([config.QP_TASKS_OIDC_AUDIENCE, config.QP_TASKS_INVOKER_SA, config.QP_SCHEDULER_SA]).toEqual([undefined, undefined, undefined]);
+    expect(() => loadConfig({ ...PROD_QSTASH, QP_SCHEDULER_SA: 'qp-scheduler-sa@qp-test-project.iam.gserviceaccount.com' })).toThrow(/Ambiguous/);
+  });
+
+  it.each([
+    ['local adapter with qstash auth', { QP_WORKER_AUTH_MODE: 'qstash' }],
+    ['qstash adapter with oidc auth, outside production', { QP_QUEUE_ADAPTER: 'qstash', ...QSTASH, QP_WORKER_AUTH_MODE: 'oidc' }],
+  ])('rejects %s in every environment', (_label, env) => {
+    expect(() => loadConfig(env)).toThrow(MISMATCH);
+  });
+
+  it('the mismatch message is constant and carries no configured value', () => {
+    for (const env of [{ ...PROD_QSTASH, QP_WORKER_AUTH_MODE: 'oidc' }, { ...PROD_CLOUD, QP_WORKER_AUTH_MODE: 'qstash', ...QSTASH }]) {
+      let message = '';
+      try { loadConfig(env); } catch (error) { message = util.inspect(error, { depth: 5 }); }
+      expect(message).toContain('Worker auth mode does not match');
+      for (const secret of SECRETS) expect(message).not.toContain(secret);
+    }
+  });
+});
+
+describe('signing keys are used untrimmed, so surrounding whitespace is rejected (PR #5 review F6)', () => {
+  it.each([
+    ['QSTASH_CURRENT_SIGNING_KEY', `${FAKE.current}
+`, 'trailing newline'],
+    ['QSTASH_CURRENT_SIGNING_KEY', ` ${FAKE.current}`, 'leading space'],
+    ['QSTASH_NEXT_SIGNING_KEY', `${FAKE.next}
+`, 'trailing CRLF'],
+    ['QSTASH_NEXT_SIGNING_KEY', `	${FAKE.next}`, 'leading tab'],
+    ['QSTASH_NEXT_SIGNING_KEY', `${FAKE.next} `, 'trailing space'],
+  ])('%s with a %s is rejected, naming only the variable', (name, value) => {
+    for (const env of [PROD_QSTASH, { QP_QUEUE_ADAPTER: 'qstash', ...QSTASH }]) {
+      let message = '';
+      try { loadConfig({ ...env, [name]: value }); } catch (error) { message = util.inspect(error, { depth: 5 }) + String(error); }
+      expect(message).toContain(`${name} must not have leading or trailing whitespace`);
+      for (const secret of SECRETS) expect(message).not.toContain(secret);
+    }
+  });
+  it('clean keys still load', () => {
+    expect(loadConfig(PROD_QSTASH).QSTASH_CURRENT_SIGNING_KEY).toBe(FAKE.current);
+  });
+});
+
 describe('production guard', () => {
   const rejections: Array<[string, Record<string, string>, RegExp]> = [
     ['local queue', { ...PROD_QSTASH, QP_QUEUE_ADAPTER: 'local' }, /Unsafe production/],
@@ -116,6 +175,12 @@ describe('production guard', () => {
     ['qstash with fault flag', { ...PROD_QSTASH, QP_FAULT_CREATE: 'fail' }, /Unsafe production/],
     ['qstash with emulator override', { ...PROD_QSTASH, FIRESTORE_EMULATOR_HOST: '127.0.0.1:8080' }, /no emulator/],
     ['qstash with local worker auth', { ...PROD_QSTASH, QP_WORKER_AUTH_MODE: 'local' }, /Local worker auth/],
+    ['qstash with oidc worker auth', { ...PROD_QSTASH, QP_WORKER_AUTH_MODE: 'oidc' }, MISMATCH],
+    ['cloud with qstash worker auth', { ...PROD_CLOUD, QP_WORKER_AUTH_MODE: 'qstash' }, MISMATCH],
+    ['cloud (default adapter) with qstash worker auth', { ...without(PROD_CLOUD, 'QP_QUEUE_ADAPTER'), QP_WORKER_AUTH_MODE: 'qstash' }, MISMATCH],
+    ['cloud with local worker auth', { ...PROD_CLOUD, QP_WORKER_AUTH_MODE: 'local' }, /Local worker auth/],
+    ['unknown worker auth mode', { ...PROD_QSTASH, QP_WORKER_AUTH_MODE: 'bearer' }, /Invalid API configuration/],
+    ['empty worker auth mode', { ...PROD_QSTASH, QP_WORKER_AUTH_MODE: '' }, /Invalid API configuration/],
   ];
   it.each(rejections)('rejects %s', (_label, env, message) => {
     expect(() => loadConfig(env)).toThrow(message);

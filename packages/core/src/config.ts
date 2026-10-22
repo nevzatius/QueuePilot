@@ -54,7 +54,8 @@ const ConfigSchema = z.object({
   QP_SCHEDULER_SA: z.email().optional(),
   QP_WORKER_URL: z.url().default('http://127.0.0.1:18281'),
   QP_TASKS_OIDC_AUDIENCE: z.url().optional(),
-  QP_WORKER_AUTH_MODE: z.enum(['oidc', 'local']).default('oidc'),
+  // `qstash` is the default under the qstash adapter (see loadConfig); `oidc` otherwise.
+  QP_WORKER_AUTH_MODE: z.enum(['oidc', 'local', 'qstash']).default('oidc'),
   QP_TASK_DISPATCH_DEADLINE_SECONDS: z.coerce.number().int().min(15).max(30).default(30),
   QP_RECONCILER_SHARDS: z.coerce.number().int().min(4).max(4).default(4),
   QP_RECONCILE_LIMIT_PER_SHARD: integer(25, 25),
@@ -101,13 +102,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       throw new Error('QStash queue requires an HTTPS worker origin in production');
     }
   }
+  // The HMAC uses the key as given, so a stray newline or space from a pasted secret must fail loudly. Names only, never a value.
+  // Only under qstash, where the keys are used (blank foreign values under another backend stay ignored, see the mixed-config tests).
+  for (const key of ['QSTASH_CURRENT_SIGNING_KEY', 'QSTASH_NEXT_SIGNING_KEY'] as const) {
+    const value = config[key];
+    if (config.QP_QUEUE_ADAPTER === 'qstash' && value !== undefined && value !== value.trim()) throw new Error(`${key} must not have leading or trailing whitespace`);
+  }
+  // The auth mode follows the queue backend: qstash <-> qstash, cloud/local <-> oidc (or local, checked below).
+  if (!isSet(env.QP_WORKER_AUTH_MODE) && config.QP_QUEUE_ADAPTER === 'qstash') config.QP_WORKER_AUTH_MODE = 'qstash';
   if (config.QP_WORKER_AUTH_MODE === 'local' && (config.QP_ENV === 'production' || config.QP_QUEUE_ADAPTER !== 'local'
       || !/^(localhost|127\.0\.0\.1):\d+$/.test(env.FIRESTORE_EMULATOR_HOST ?? '')
       || !config.GCLOUD_PROJECT.startsWith('demo-'))) {
     throw new Error('Local worker auth requires a local emulator and demo project');
   }
+  // Constant message: no value, so a mistyped secret cannot end up in it. Local mode was already settled above.
+  if (config.QP_WORKER_AUTH_MODE !== 'local' && (config.QP_WORKER_AUTH_MODE === 'qstash') !== (config.QP_QUEUE_ADAPTER === 'qstash')) {
+    throw new Error('Worker auth mode does not match the queue backend');
+  }
   if (config.QP_ENV === 'production') {
-    if (config.QP_QUEUE_ADAPTER === 'local' || config.QP_WORKER_AUTH_MODE !== 'oidc'
+    if (config.QP_QUEUE_ADAPTER === 'local' || config.QP_WORKER_AUTH_MODE === 'local'
         || config.QP_QUOTA_FAILURE_MODE === 'open' || Object.keys(env).some((key) => key.startsWith('QP_FAULT_'))) {
       throw new Error('Unsafe production configuration');
     }

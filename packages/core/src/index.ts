@@ -15,6 +15,7 @@ export * from './queue/runtime.js';
 export * from './processing/store.js';
 export * from './processing/worker.js';
 export * from './processing/auth.js';
+export * from './processing/qstash-auth.js';
 export * from './reconciler/index.js';
 export * from './requests.js';
 export * from './cache/redis.js';

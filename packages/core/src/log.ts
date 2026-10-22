@@ -7,6 +7,7 @@ export const logOptions: LoggerOptions = {
     paths: ['authorization', 'cookie', 'cookies', 'description', 'req.headers.authorization',
       'req.headers.cookie', 'headers.authorization', 'headers.cookie', 'body.description',
       'req.body.description', '*.description', '*.authorization', '*.cookies',
+      'req.headers["upstash-signature"]', 'headers["upstash-signature"]', '*["upstash-signature"]', '["upstash-signature"]',
       'QSTASH_TOKEN', 'QSTASH_CURRENT_SIGNING_KEY', 'QSTASH_NEXT_SIGNING_KEY', 'REDIS_URL',
       '*.QSTASH_TOKEN', '*.QSTASH_CURRENT_SIGNING_KEY', '*.QSTASH_NEXT_SIGNING_KEY', '*.REDIS_URL'],
     censor: '[REDACTED]',
