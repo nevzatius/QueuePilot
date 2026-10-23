@@ -28,7 +28,7 @@ Merged: B9-1 config/production guard/factory, B9-2 `QStashQueue`, B9-3 worker QS
 **B9-5 is only partly done**: the Redis connect timeout landed in B9-4; `count()` stuck counts, the time-based reconcile throttle (also for `/internal/reconcile`) and `RESOURCE_EXHAUSTED` classification are open (TASKS "B9-5 must").
 B9-7 merged (PR #8): `render.yaml`, `firebase.json`, QStash setup/shutdown scripts, `preflight --profile free`, `seed-demo --profile free`, `QP_FIREBASE_SERVICE_ACCOUNT_JSON`, runbook free-tier section (covers the B9-8 runbook acceptance).
 B9-7 review fixes (open PR): free indexes file without TTL, `RENDER` requires the service-account key, QStash timeout never claimed current, `<n><s|m|h>` timeouts, Hosting cache headers, `autoDeployTrigger: off`, runbook prerequisites and shutdown, nested log redaction.
-B9-9 (next): owner manual setup and live verification (checklists in TASKS.md, "B9-9 live checks").
+B9-9: the first live free-tier deployment is done (2026-10-22/23); results in TASKS.md "B9-9 live results". Still open: shutdown (runbook step 11), the NOT VERIFIED live checks (Upstash-Timeout maximum, key rotation, Redis cold AUTH, QStash retry limits, Hosting header precedence, foreign-origin request) and the client-IP log follow-up.
 
 ## Checks
 
@@ -56,4 +56,4 @@ T3 `.claude/agents/architecture-reviewer.md` is stale against ADR-017; T4 stale 
 
 ## Next step
 
-1. Review and merge the B9-7 review-fix PR. 2. Decide whether to finish the B9-5 remainder before the live run (recommended: it protects the Spark read budget). 3. Owner: B9-9, following the runbook free-tier path from step 0 in order, then record the live checks in TASKS.md.
+1. Review and merge the B9-7 review-fix PR. 2. Decide whether to finish the B9-5 remainder before the live run (recommended: it protects the Spark read budget). 3. Owner: close the open B9-9 live checks, then shut down (runbook step 11) when the demo is no longer needed.
