@@ -73,27 +73,53 @@ export interface FirebaseServiceAccount { projectId: string; clientEmail: string
 const SERVICE_ACCOUNT_EMAIL = /^[A-Za-z0-9._-]+@[a-z][a-z0-9-]*\.iam\.gserviceaccount\.com$/;
 const PRIVATE_KEY = /^-----BEGIN PRIVATE KEY-----[\s\S]+-----END PRIVATE KEY-----\s*$/;
 /**
+ * Why a service-account JSON is unusable, as a category only (never a fragment of the input), or undefined when it is usable.
+ * JSON.parse errors quote a slice of their input, so they are swallowed here.
+ */
+function serviceAccountProblem(raw: string, projectId: string): 'invalid_json' | 'project_mismatch' | undefined {
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { return 'invalid_json'; }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return 'invalid_json';
+  const { type, project_id: keyProject, client_email: clientEmail, private_key: privateKey } = value as Record<string, unknown>;
+  if (type !== 'service_account' || typeof clientEmail !== 'string' || !SERVICE_ACCOUNT_EMAIL.test(clientEmail)
+      || typeof privateKey !== 'string' || !PRIVATE_KEY.test(privateKey)) return 'invalid_json';
+  if (keyProject !== projectId) return 'project_mismatch';
+  // A PEM with the right markers and a corrupted body would otherwise pass here and fail on the first Firestore call.
+  try { createPrivateKey(privateKey); } catch { return 'invalid_json'; }
+  return undefined;
+}
+/**
  * Parses and validates QP_FIREBASE_SERVICE_ACCOUNT_JSON for `projectId`. The ONLY place the raw JSON is interpreted.
- * Every failure is the same constant message: JSON.parse errors quote a slice of their input, and a rejected key
- * (or a typo of one) must never end up in a log.
+ * Every failure is the same constant message: a rejected key (or a typo of one) must never end up in a log.
  */
 export function parseServiceAccount(raw: string, projectId: string): FirebaseServiceAccount {
-  const invalid = new Error('QP_FIREBASE_SERVICE_ACCOUNT_JSON is invalid');
-  let value: unknown;
-  try { value = JSON.parse(raw); } catch { throw invalid; }
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw invalid;
-  const { type, project_id: keyProject, client_email: clientEmail, private_key: privateKey } = value as Record<string, unknown>;
-  if (type !== 'service_account' || keyProject !== projectId || typeof clientEmail !== 'string' || !SERVICE_ACCOUNT_EMAIL.test(clientEmail)
-      || typeof privateKey !== 'string' || !PRIVATE_KEY.test(privateKey)) throw invalid;
-  // A PEM with the right markers and a corrupted body would otherwise pass here and fail on the first Firestore call.
-  try { createPrivateKey(privateKey); } catch { throw invalid; }
-  return { projectId, clientEmail, privateKey };
+  if (serviceAccountProblem(raw, projectId)) throw new Error('QP_FIREBASE_SERVICE_ACCOUNT_JSON is invalid');
+  const { client_email: clientEmail, private_key: privateKey } = JSON.parse(raw) as Record<string, string>;
+  return { projectId, clientEmail: clientEmail!, privateKey: privateKey! };
 }
 /** The configured service account, or undefined when none is set (the SDK then falls back to ambient credentials). */
 export function configuredServiceAccount(config: Pick<Config, 'GCLOUD_PROJECT' | 'QP_FIREBASE_SERVICE_ACCOUNT_JSON'>): FirebaseServiceAccount | undefined {
   const raw = config.QP_FIREBASE_SERVICE_ACCOUNT_JSON;
   return isSet(raw) ? parseServiceAccount(raw!, config.GCLOUD_PROJECT) : undefined;
 }
+
+/**
+ * Why a variable failed, as a category. Never the input and never the expected shape beyond the category, so a
+ * rejected secret cannot reach a log through it.
+ */
+export type ConfigReason = 'missing' | 'blank' | 'wrong_format' | 'whitespace' | 'not_https' | 'not_origin' | 'not_rediss' | 'out_of_range'
+  | 'invalid_json' | 'project_mismatch' | 'mismatch' | 'not_allowed' | 'wildcard' | 'empty_entry' | 'too_many' | 'duplicate' | 'loopback_in_production';
+export interface ConfigIssue { readonly name: string; readonly reason: ConfigReason }
+/** Thrown by loadConfig. The message and `issues` hold variable NAMES and reason codes only, never a value. No `cause`. */
+export class ConfigError extends Error {
+  readonly issues: readonly ConfigIssue[];
+  constructor(message: string, issues: readonly ConfigIssue[]) {
+    super(message);
+    this.name = 'ConfigError';
+    this.issues = Object.freeze(issues.map(({ name, reason }) => Object.freeze({ name, reason })));
+  }
+}
+interface Problem extends ConfigIssue { readonly message: string }
 
 const ConfigSchema = z.object({
   QP_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -139,80 +165,135 @@ const ConfigSchema = z.object({
 });
 export type Config = z.infer<typeof ConfigSchema>;
 
+/** Why a CORS list is rejected, judged on the first offending entry; undefined when the list is fine. */
+function corsProblem(origins: readonly string[], production: boolean): ConfigReason | undefined {
+  if (origins.length > CORS_ORIGINS_MAX) return 'too_many';
+  for (const origin of origins) {
+    if (origin === '') return 'empty_entry';
+    if (origin.includes('*')) return 'wildcard';
+    if (!URL.canParse(origin)) return 'wrong_format';
+    const url = new URL(origin);
+    if (url.origin !== origin) return 'not_origin';
+    if (url.protocol === 'https:' && production && isLoopbackHost(url.hostname)) return 'loopback_in_production';
+    if (!isCorsOrigin(origin, production)) return 'not_https';
+  }
+  return production && new Set(origins).size !== origins.length ? 'duplicate' : undefined;
+}
+
+/** Zod issue -> reason. Looks at the presence and shape of the input only; never copies the input or the zod message. */
+function schemaReason(code: string, raw: string | undefined): ConfigReason {
+  if (raw === undefined) return 'missing';
+  if (raw.trim() === '') return 'blank';
+  if (raw !== raw.trim()) return 'whitespace';
+  return code === 'too_small' || code === 'too_big' ? 'out_of_range' : 'wrong_format';
+}
+
+/** The distinct messages of the problems, then every variable name with its reason. Never a value. */
+function describe(problems: readonly Problem[]): string {
+  const messages = [...new Set(problems.map((problem) => problem.message))].join('; ');
+  return `${messages} [${problems.map((problem) => `${problem.name} ${problem.reason}`).join(', ')}]`;
+}
+
+/** Throws a ConfigError that names every failing variable (see ConfigIssue); the API and the worker share this loader. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   // A refine that throws would carry the raw input (possibly a credential URL) in the error; never forward it.
   let parsed: ReturnType<typeof ConfigSchema.safeParse>;
-  try { parsed = ConfigSchema.safeParse(env); } catch { throw new Error('Invalid API configuration'); }
-  if (!parsed.success) throw new Error('Invalid API configuration');
-  const config = parsed.data;
-  config.QP_QUEUE_ADAPTER ??= config.QP_ENV === 'production' ? 'cloud' : 'local';
-  if (!URL.canParse(config.QP_WORKER_URL)) throw new Error('Invalid API configuration');
-  const workerUrl = new URL(config.QP_WORKER_URL);
-  if (workerUrl.origin !== config.QP_WORKER_URL) {
-    throw new Error('Worker URL must be an origin');
+  try { parsed = ConfigSchema.safeParse(env); } catch { throw new ConfigError('Invalid API configuration', []); }
+  if (!parsed.success) {
+    const known = Object.keys(ConfigSchema.shape);
+    const schemaProblems: Problem[] = [];
+    for (const issue of parsed.error.issues) {
+      const name = issue.path[0];
+      if (typeof name !== 'string' || !known.includes(name) || schemaProblems.some((problem) => problem.name === name)) continue;
+      schemaProblems.push({ name, reason: schemaReason(issue.code, env[name]), message: 'Invalid API configuration' });
+    }
+    throw new ConfigError(schemaProblems.length ? describe(schemaProblems) : 'Invalid API configuration', schemaProblems);
   }
-  if (!isHttpsOrigin(config.QSTASH_URL)) throw new Error('QSTASH_URL must be an https origin');
+  const config = parsed.data;
+  const problems: Problem[] = [];
+  const fail = (name: string, reason: ConfigReason, message: string) => { problems.push({ name, reason, message }); };
+  const production = config.QP_ENV === 'production';
+  config.QP_QUEUE_ADAPTER ??= production ? 'cloud' : 'local';
+  const adapter = config.QP_QUEUE_ADAPTER;
+  const workerUrl = URL.canParse(config.QP_WORKER_URL) ? new URL(config.QP_WORKER_URL) : undefined;
+  if (!workerUrl) fail('QP_WORKER_URL', 'wrong_format', 'Invalid API configuration');
+  else if (workerUrl.origin !== config.QP_WORKER_URL) {
+    fail('QP_WORKER_URL', config.QP_WORKER_URL !== config.QP_WORKER_URL.trim() ? 'whitespace' : 'not_origin', 'Worker URL must be an origin');
+  }
+  if (!isHttpsOrigin(config.QSTASH_URL)) {
+    const url = URL.canParse(config.QSTASH_URL) ? new URL(config.QSTASH_URL) : undefined;
+    const reason = config.QSTASH_URL !== config.QSTASH_URL.trim() ? 'whitespace' : !url ? 'wrong_format' : url.protocol !== 'https:' ? 'not_https' : 'not_origin';
+    fail('QSTASH_URL', reason, 'QSTASH_URL must be an https origin');
+  }
   // Constant messages: a rejected list is never echoed, because it may be a pasted secret or a typo of one.
   if (config.QP_REDIS_CONNECT_TIMEOUT_MS < REDIS_CONNECT_TIMEOUT_MIN_MS || config.QP_REDIS_CONNECT_TIMEOUT_MS > REDIS_CONNECT_TIMEOUT_MAX_MS) {
-    throw new Error('QP_REDIS_CONNECT_TIMEOUT_MS is out of range');
+    fail('QP_REDIS_CONNECT_TIMEOUT_MS', 'out_of_range', 'QP_REDIS_CONNECT_TIMEOUT_MS is out of range');
   }
-  if (config.QP_CORS_ORIGINS.length > CORS_ORIGINS_MAX
-      || !config.QP_CORS_ORIGINS.every((origin) => isCorsOrigin(origin, config.QP_ENV === 'production'))
-      || (config.QP_ENV === 'production' && new Set(config.QP_CORS_ORIGINS).size !== config.QP_CORS_ORIGINS.length)) {
-    throw new Error('QP_CORS_ORIGINS must be exact https origins (http://localhost and http://127.0.0.1 only outside production)');
+  const corsReason = corsProblem(config.QP_CORS_ORIGINS, production);
+  if (corsReason) {
+    fail('QP_CORS_ORIGINS', corsReason, 'QP_CORS_ORIGINS must be exact https origins (http://localhost and http://127.0.0.1 only outside production)');
   }
+  const emulatorCulprits = [env.FIRESTORE_EMULATOR_HOST ? 'FIRESTORE_EMULATOR_HOST' : '', env.FIREBASE_AUTH_EMULATOR_HOST ? 'FIREBASE_AUTH_EMULATOR_HOST' : '',
+    config.GCLOUD_PROJECT.startsWith('demo-') ? 'GCLOUD_PROJECT' : ''].filter(Boolean);
   if (isSet(config.QP_FIREBASE_SERVICE_ACCOUNT_JSON)) {
-    if (env.FIRESTORE_EMULATOR_HOST || env.FIREBASE_AUTH_EMULATOR_HOST || config.GCLOUD_PROJECT.startsWith('demo-')) {
-      throw new Error('QP_FIREBASE_SERVICE_ACCOUNT_JSON is not allowed with an emulator or a demo project');
+    if (emulatorCulprits.length > 0) {
+      const message = 'QP_FIREBASE_SERVICE_ACCOUNT_JSON is not allowed with an emulator or a demo project';
+      for (const name of [...emulatorCulprits, 'QP_FIREBASE_SERVICE_ACCOUNT_JSON']) fail(name, 'not_allowed', message);
+    } else {
+      // A key for another project is reported on the key (the value to replace), never with either project id.
+      const reason = serviceAccountProblem(config.QP_FIREBASE_SERVICE_ACCOUNT_JSON!, config.GCLOUD_PROJECT);
+      if (reason) fail('QP_FIREBASE_SERVICE_ACCOUNT_JSON', reason, 'QP_FIREBASE_SERVICE_ACCOUNT_JSON is invalid');
     }
-    configuredServiceAccount(config); // throws the constant message when the key is unusable
   }
   // Render sets RENDER and has no ambient Google identity: without a key every Firestore call would fail after boot.
   // The Cloud Run path (RENDER unset) keeps its metadata identity. Constant message, no value.
-  if (config.QP_ENV === 'production' && isSet(env.RENDER) && !isSet(config.QP_FIREBASE_SERVICE_ACCOUNT_JSON)) {
-    throw new Error('QP_FIREBASE_SERVICE_ACCOUNT_JSON is required on this host');
+  if (production && isSet(env.RENDER) && !isSet(config.QP_FIREBASE_SERVICE_ACCOUNT_JSON)) {
+    fail('QP_FIREBASE_SERVICE_ACCOUNT_JSON', 'missing', 'QP_FIREBASE_SERVICE_ACCOUNT_JSON is required on this host');
   }
-  if (config.QP_QUEUE_ADAPTER === 'cloud' && (!config.QP_TASKS_INVOKER_SA || !config.QP_TASKS_OIDC_AUDIENCE
-      || workerUrl.protocol !== 'https:' || config.QP_TASKS_OIDC_AUDIENCE !== config.QP_WORKER_URL)) {
-    throw new Error('Cloud queue requires HTTPS worker origin, matching audience and invoker service account');
+  if (adapter === 'cloud') {
+    const message = 'Cloud queue requires HTTPS worker origin, matching audience and invoker service account';
+    if (!config.QP_TASKS_INVOKER_SA) fail('QP_TASKS_INVOKER_SA', 'missing', message);
+    if (!config.QP_TASKS_OIDC_AUDIENCE) fail('QP_TASKS_OIDC_AUDIENCE', 'missing', message);
+    else if (config.QP_TASKS_OIDC_AUDIENCE !== config.QP_WORKER_URL) fail('QP_TASKS_OIDC_AUDIENCE', 'mismatch', message);
+    if (workerUrl && workerUrl.protocol !== 'https:') fail('QP_WORKER_URL', 'not_https', message);
   }
-  if (config.QP_QUEUE_ADAPTER === 'qstash') {
+  if (adapter === 'qstash') {
     const missing = QSTASH_VARS.filter((key) => !isSet(config[key]));
-    if (missing.length > 0) throw new Error(`QStash queue requires ${missing.join(', ')}`);
-    if (workerUrl.protocol !== 'https:' && config.QP_ENV === 'production') {
-      throw new Error('QStash queue requires an HTTPS worker origin in production');
-    }
+    for (const key of missing) fail(key, 'missing', `QStash queue requires ${missing.join(', ')}`);
+    if (workerUrl && workerUrl.protocol !== 'https:' && production) fail('QP_WORKER_URL', 'not_https', 'QStash queue requires an HTTPS worker origin in production');
   }
   // The HMAC uses the key as given, so a stray newline or space from a pasted secret must fail loudly. Names only, never a value.
   // Only under qstash, where the keys are used (blank foreign values under another backend stay ignored, see the mixed-config tests).
   for (const key of ['QSTASH_CURRENT_SIGNING_KEY', 'QSTASH_NEXT_SIGNING_KEY'] as const) {
     const value = config[key];
-    if (config.QP_QUEUE_ADAPTER === 'qstash' && value !== undefined && value !== value.trim()) throw new Error(`${key} must not have leading or trailing whitespace`);
+    if (adapter === 'qstash' && value !== undefined && value !== value.trim()) fail(key, 'whitespace', `${key} must not have leading or trailing whitespace`);
   }
   // The auth mode follows the queue backend: qstash <-> qstash, cloud/local <-> oidc (or local, checked below).
-  if (!isSet(env.QP_WORKER_AUTH_MODE) && config.QP_QUEUE_ADAPTER === 'qstash') config.QP_WORKER_AUTH_MODE = 'qstash';
-  if (config.QP_WORKER_AUTH_MODE === 'local' && (config.QP_ENV === 'production' || config.QP_QUEUE_ADAPTER !== 'local'
+  if (!isSet(env.QP_WORKER_AUTH_MODE) && adapter === 'qstash') config.QP_WORKER_AUTH_MODE = 'qstash';
+  if (config.QP_WORKER_AUTH_MODE === 'local' && (production || adapter !== 'local'
       || !/^(localhost|127\.0\.0\.1):\d+$/.test(env.FIRESTORE_EMULATOR_HOST ?? '')
       || !config.GCLOUD_PROJECT.startsWith('demo-'))) {
-    throw new Error('Local worker auth requires a local emulator and demo project');
+    fail('QP_WORKER_AUTH_MODE', 'not_allowed', 'Local worker auth requires a local emulator and demo project');
   }
   // Constant message: no value, so a mistyped secret cannot end up in it. Local mode was already settled above.
-  if (config.QP_WORKER_AUTH_MODE !== 'local' && (config.QP_WORKER_AUTH_MODE === 'qstash') !== (config.QP_QUEUE_ADAPTER === 'qstash')) {
-    throw new Error('Worker auth mode does not match the queue backend');
+  if (config.QP_WORKER_AUTH_MODE !== 'local' && (config.QP_WORKER_AUTH_MODE === 'qstash') !== (adapter === 'qstash')) {
+    fail('QP_WORKER_AUTH_MODE', 'mismatch', 'Worker auth mode does not match the queue backend');
   }
-  if (config.QP_ENV === 'production') {
-    if (config.QP_QUEUE_ADAPTER === 'local' || config.QP_WORKER_AUTH_MODE === 'local'
-        || config.QP_QUOTA_FAILURE_MODE === 'open' || Object.keys(env).some((key) => key.startsWith('QP_FAULT_'))) {
-      throw new Error('Unsafe production configuration');
-    }
-    if (new URL(config.REDIS_URL).protocol !== 'rediss:') throw new Error('Production requires a TLS Redis URL (rediss:)');
-    const foreign: readonly string[] = config.QP_QUEUE_ADAPTER === 'qstash' ? CLOUD_TASKS_VARS : [...QSTASH_VARS, ...QSTASH_OPTIONAL_VARS];
-    if (foreign.some((key) => isSet(env[key]))) {
-      throw new Error('Ambiguous production configuration: queue backend settings are mixed');
-    }
-    if (env.FIRESTORE_EMULATOR_HOST || env.FIREBASE_AUTH_EMULATOR_HOST || config.GCLOUD_PROJECT.startsWith('demo-')) {
-      throw new Error('Production requires a real project and no emulator overrides');
-    }
+  if (production) {
+    const message = 'Unsafe production configuration';
+    if (adapter === 'local') fail('QP_QUEUE_ADAPTER', 'not_allowed', message);
+    if (config.QP_WORKER_AUTH_MODE === 'local') fail('QP_WORKER_AUTH_MODE', 'not_allowed', message);
+    if (config.QP_QUOTA_FAILURE_MODE === 'open') fail('QP_QUOTA_FAILURE_MODE', 'not_allowed', message);
+    // The suffix of a fault variable comes from the environment: name it only when it is well formed.
+    for (const key of Object.keys(env).filter((name) => name.startsWith('QP_FAULT_'))) fail(/^QP_FAULT_[A-Z0-9_]{1,60}$/.test(key) ? key : 'QP_FAULT_*', 'not_allowed', message);
+    if (new URL(config.REDIS_URL).protocol !== 'rediss:') fail('REDIS_URL', 'not_rediss', 'Production requires a TLS Redis URL (rediss:)');
+    const foreign: readonly string[] = adapter === 'qstash' ? CLOUD_TASKS_VARS : [...QSTASH_VARS, ...QSTASH_OPTIONAL_VARS];
+    for (const key of foreign.filter((name) => isSet(env[name]))) fail(key, 'not_allowed', 'Ambiguous production configuration: queue backend settings are mixed');
+    for (const name of emulatorCulprits) fail(name, 'not_allowed', 'Production requires a real project and no emulator overrides');
+  }
+  if (problems.length > 0) {
+    const unique = problems.filter((problem, index) => problems.findIndex((other) => other.name === problem.name && other.reason === problem.reason) === index);
+    throw new ConfigError(describe(unique), unique);
   }
   return config;
 }

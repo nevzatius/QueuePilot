@@ -58,7 +58,7 @@ describe('QP_FIREBASE_SERVICE_ACCOUNT_JSON', () => {
 
   it('a key that is valid except for the project names neither the key nor either project', () => {
     const message = failure({ ...PROD, QP_FIREBASE_SERVICE_ACCOUNT_JSON: keyJson({ project_id: 'other-project' }) });
-    expect(message).toMatch(/^QP_FIREBASE_SERVICE_ACCOUNT_JSON is invalid(Error|$)/);
+    expect(message).toMatch(/^QP_FIREBASE_SERVICE_ACCOUNT_JSON is invalid \[QP_FIREBASE_SERVICE_ACCOUNT_JSON project_mismatch\](ConfigError|$)/);
     expect(message).not.toContain('other-project');
     expectNoKey(message);
   });
@@ -89,7 +89,7 @@ describe('QP_FIREBASE_SERVICE_ACCOUNT_JSON', () => {
 
   describe('on Render (RENDER is set), which has no ambient Google identity', () => {
     it.each([['true'], ['1'], ['anything']])('production without the key is refused, for the API and the worker alike (RENDER=%s)', (render) => {
-      expect(failure({ ...PROD, RENDER: render })).toMatch(/^QP_FIREBASE_SERVICE_ACCOUNT_JSON is required on this host(Error|$)/);
+      expect(failure({ ...PROD, RENDER: render })).toMatch(/^QP_FIREBASE_SERVICE_ACCOUNT_JSON is required on this host \[QP_FIREBASE_SERVICE_ACCOUNT_JSON missing\](ConfigError|$)/);
       for (const blank of ['', '   ']) expect(failure({ ...PROD, RENDER: render, QP_FIREBASE_SERVICE_ACCOUNT_JSON: blank })).toContain('is required on this host');
     });
 
