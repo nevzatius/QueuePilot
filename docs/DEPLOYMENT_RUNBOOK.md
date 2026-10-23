@@ -16,7 +16,7 @@ check them with `--help` before running. Placeholders in `CAPITALS` are yours to
 > **STOP if any page asks for a card, a payment method or a billing account.** Close it, change nothing, and tell the maintainer which page asked.
 > Every service below has a free plan that needs none. Never click "Upgrade", "Blaze", "Add payment method" or a paid instance type.
 
-Status: **prepared offline (B9-7). Nothing here has been run against Firebase, Render or Upstash**; the live checks are B9-9. The GCP sections below (0 to I) are the
+Status: **prepared offline (B9-7); first live run 2026-10-22/23 (B9-9)**, recorded in `docs/TASKS.md` ("B9-9 live results"). Steps marked **(observed)** below come from that run; anything the run did not check is still NOT VERIFIED. The GCP sections below (0 to I) are the
 paid path and are not needed here. Secrets go into the Render dashboard or into your shell session only: never into chat, a commit, a command argument or a file in the repo.
 Placeholders in `CAPITALS` are yours to fill in; none is invented here. Commands are PowerShell; **[repo]** marks scripts in this repository.
 
@@ -40,7 +40,22 @@ Fixed names used below: Redis database `queuepilot`; Render services `queuepilot
 2. Build > Firestore Database > Create database > **location `europe-west1`** (cannot be changed afterwards) > production mode.
 3. Build > Authentication > Sign-in method > enable **Google**. (`PROJECT_ID.web.app` and `PROJECT_ID.firebaseapp.com` are authorised domains by default.)
 4. Project settings > Your apps > register a **Web app**; copy `apiKey`, `authDomain`, `projectId`, `appId` (public config, used in step 7).
-5. Label the project, because `seed-demo` and `grant-role` refuse unlabelled projects: `gcloud projects update PROJECT_ID --update-labels=queuepilot-environment=demo` (needs `gcloud auth login`).
+5. Label the project `queuepilot-environment=demo`, because `seed-demo` and `grant-role` refuse unlabelled projects (needs `gcloud auth login`).
+   **(observed)** `gcloud projects update --update-labels` is **not recognized** by Google Cloud SDK 590.0.0 (nor under `gcloud beta`). Use the Cloud Resource Manager v3 API instead. `PROJECT_NUMBER` is the project **number**, not the id (step 1.1).
+   `updateMask=labels` **replaces the whole label set**, so send every existing label plus the new one (a Firebase project already carries `firebase=enabled` and `firebase-core=disabled`; keep them). The token stays in a variable and is never printed. The live run did this PATCH; the snippet below is a PowerShell transcription of it and was not re-run as written:
+
+   ```powershell
+   $token = gcloud auth print-access-token
+   $headers = @{ Authorization = "Bearer $token" }
+   $uri = "https://cloudresourcemanager.googleapis.com/v3/projects/PROJECT_NUMBER"
+   $project = Invoke-RestMethod -Uri $uri -Headers $headers          # read the current labels first
+   $labels = @{}
+   if ($project.labels) { $project.labels.PSObject.Properties | ForEach-Object { $labels[$_.Name] = $_.Value } }
+   $labels['queuepilot-environment'] = 'demo'
+   Invoke-RestMethod -Method Patch -Uri "${uri}?updateMask=labels" -Headers $headers -ContentType 'application/json' -Body (@{ labels = $labels } | ConvertTo-Json)
+   ```
+
+   Check by reading the project again: all the labels, including the new one, must be there.
 
 **2. Service-account key (the API and worker have no Google identity on Render).**
 1. Project settings > Service accounts > **Generate new private key**. Save the JSON **outside the repo** (for example `D:\QueuePilot-local\`).
@@ -50,6 +65,7 @@ Fixed names used below: Redis database `queuepilot`; Render services `queuepilot
 **3. Upstash.**
 1. Redis > Create database named **`queuepilot`**, a Europe region, **TLS on**, free plan. Copy the `rediss://...` URL (`REDIS_URL`).
 2. QStash > copy the **token**, the **current** and **next signing keys**, and the **URL** shown beside the token (`QSTASH_URL`; tokens are regional).
+3. **(observed) Paste every Upstash value WITHOUT quotes.** The Upstash console copies `REDIS_URL`, `QSTASH_URL`, the token and both signing keys with surrounding double quotes. In the live run the first Render start failed with `Invalid API configuration` because of them, and after the first fix one worker variable was still wrong (quotes or a stale value; the cause was not recorded). Remove the quotes from each value before pasting it into Render (both services). Before deploying, put the values in a local env file **outside the repo** and run `node scripts/config-doctor.mjs` on it: it found the quoted values in the live run.
 
 **3a. Check your values before deploying [repo].** Run the configuration doctor before you create the services (and again before every change of a value). It builds the environment each Render service would get (the fixed values of `render.yaml` plus your values) and runs the **same loader the service runs at startup**, locally: no network, nothing is sent anywhere, and it never prints a value (only names, presence, length and whether a value has leading/trailing whitespace).
 1. Put your dashboard values in a text file **outside the repository** (the doctor refuses a file inside it), one `NAME=VALUE` per line, for example `D:queuepilot-secretssecrets.txt`: `GCLOUD_PROJECT`, `QP_WORKER_URL`, `QP_CORS_ORIGINS`, `QSTASH_URL`, `QSTASH_TOKEN`, `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY`, `REDIS_URL`. Exact rules: blank lines and lines starting with `#` are ignored; everything after the first `=` is the value, character for character (no trimming, **no quote stripping**: write `REDIS_URL=rediss://...`, not `REDIS_URL="rediss://..."`); a name twice is an error. Keep the service-account key as its own file, for example `D:queuepilot-secretskey.json` (the doctor minifies it the way the clipboard command in step 4.2 does).
@@ -77,6 +93,7 @@ node scripts/config-doctor.mjs --service worker --env-file D:queuepilot-secretss
 **5. Set the two URLs (the circularity).** The API publishes to the worker, and the worker accepts a QStash call only if the JWT `sub` equals `QP_WORKER_URL` + path, so both services need the worker's real public origin, which Render shows only after the first deploy.
 1. Open each service and copy its URL (`https://....onrender.com`). Check: the worker URL equals what you typed in step 4.3. If not, set `QP_WORKER_URL` on **both** services to the real one and save (Render redeploys).
 2. Note the API URL (`API_URL`) for step 7. Check: `GET API_URL/health` and `GET WORKER_URL/health` each answer `{"status":"ok"}`. The first call after idle takes about 8 to 50 s (cold start); that is expected.
+   **Measured cold start (one run each, approximate):** the earlier spike measured a bare sleeping-service response at 8 to 14 s. In the live run, with the API asleep, the dashboard was usable about **30 s** after opening the page (page load + sign-in + bootstrap; a hand stopwatch, approximate) and the web showed the cold-start notice. A request submitted afterwards with the worker asleep: accepted by the API at T+0, "Processing started" at T+25 s (worker wake through QStash), "Completed" at T+26 s, so processing itself took about 1 s (attempts 1/5, duplicate deliveries 0; worker figures are server-side timestamps of that request's timeline). This is one run each, not a distribution: do not quote it as a latency guarantee.
 3. **Readiness check (do this once after the first deploy, on both services):** `GET API_URL/ready` and `GET WORKER_URL/ready` must each answer **200** (`{"status":"ok"}` on the API, `{"status":"ready"}` on the worker). Unlike `/health`, each call makes one real Firestore read (the document `tenants/sandbox`; it need not exist yet) with the service-account credential, so it is the check that proves the key, the project id and the Firestore database together. A **503** (or a call that hangs past the cold start) means Firestore could not be read: the service-account key is missing, wrong, from another project or revoked (step 2, step 4.2), or the database was not created (step 1.2). Fix the value in Render and redeploy; the logs name only a constant code, never the key. Do not use `/ready` as Render's health check path: Render polls it all day and every poll would spend a read of the 50K/day Spark quota (`/health` reads nothing and stays the health check).
 4. If a service shows "Deploy failed", read its logs: a message such as `Invalid API configuration [QP_WORKER_URL wrong_format]`, `QP_FIREBASE_SERVICE_ACCOUNT_JSON is required on this host [...]` or `QP_FIREBASE_SERVICE_ACCOUNT_JSON is invalid [...]` names the setting and a reason code, never the value. Reproduce it locally with step 3a.
 
@@ -118,11 +135,15 @@ node scripts/seed-demo.mjs --project PROJECT_ID --profile free                  
 node scripts/seed-demo.mjs --project PROJECT_ID --profile free --apply --approve-project PROJECT_ID --project-number PROJECT_NUMBER
 ```
 
-Bootstrap creates your membership only while the tenant is open, so for your own first sign-in seed with `--open-signup true` (add it to both commands), sign in once on the Hosting site, then run `grant-role` exactly as in section G, steps 3 and 4
-(the dry run prints the uid to approve). To close sign-up again, change `openSignup` in the Firestore console: a re-run of the seed reports an existing tenant as DRIFT and never overwrites it.
+**(observed) Order that worked with the free-profile default (sign-up closed):**
+1. Sign in with Google once on the Hosting site. The first sign-in shows "Join the sandbox workspace"; pressing Join answers **"Sign-up is closed for this workspace"**. That is the designed behaviour, not a fault. The sign-in is still required: `grant-role` checks the Auth account, so the user must sign in once **before** `grant-role`.
+2. `seed-demo --profile free`: dry run, then the `--apply` command above (with `--project-number`). It created the tenant `sandbox`.
+3. `grant-role` as in section G, steps 3 and 4: the dry run prints the uid, then `--apply --approve-uid UID` gave the admin role.
+
+Alternative (not run in the live run): seed with `--open-signup true` (add it to both commands) so Join works for your own first sign-in. To close sign-up again, change `openSignup` in the Firestore console: a re-run of the seed reports an existing tenant as DRIFT and never overwrites it.
 `--tenant-daily-limit N` (1 to 2000) changes the cap. Spark allows 20K writes/day and a request costs 7, so 300/day leaves ample headroom.
 
-**10. Verify (what "works" means here).** None of this has been run yet (B9-9 records the results):
+**10. Verify (what "works" means here).** This is the acceptance list; what the first live run did and did not check is in `docs/TASKS.md` ("B9-9 live results"):
 - [ ] Sign in with Google on the Hosting site; the dashboard loads (a "service waking up" notice during a cold start is normal).
 - [ ] Submit one request: it reaches **COMPLETED** (cold start plus the QStash hop can take a minute or two). The QStash log shows one delivery answered 200.
 - [ ] The browser console shows no CORS error; a request from another origin has no `Access-Control-Allow-Origin`.

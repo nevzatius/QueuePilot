@@ -8,7 +8,9 @@ kalıcı olarak saklar; bağımsız bir worker isteği daha sonra yeniden deneme
 kazanan bir reconciler ile işler.
 
 **Durum:** Yerel MVP (API, worker, reconciler, Redis limitleri, React paneli) Firebase emülatörlerinde uçtan uca
-çalışır ve CI'dan geçer. **Google Cloud'a hiçbir şey dağıtılmamıştır** ve bulut davranışının hiçbiri doğrulanmamıştır.
+çalışır ve CI'dan geçer. **Google Cloud'a hiçbir şey dağıtılmamıştır**; Google Cloud kontrolleri (C1-C9) ÇALIŞTIRILMADI.
+Ücretsiz katmanlarda (Render free, Firebase Spark, Upstash) ilk canlı dağıtım 2026-10-22/23'te bir kez çalıştırılmıştır ve geçicidir;
+bulut rakamları birer çalıştırmadır.
 Bkz. [Bilinen sınırlamalar](#bilinen-sınırlamalar) ve [Bulut dağıtım durumu](#bulut-dağıtım-durumu).
 
 ## Proje neden var?
@@ -160,7 +162,7 @@ Upstash hiç ölçülmedi. "10.000 RPS" gibi bir verim iddia edilmez ve gösteri
 
 ## Bilinen sınırlamalar
 
-- **Production'a hazır değildir.** Bulut dağıtımı yok, güvenlik sertifikasyonu veya bağımsız denetim yok.
+- **Production'a hazır değildir.** Google Cloud dağıtımı yok; tek bir geçici ücretsiz katman çalıştırması vardır (rakamlar birer çalıştırmadır). Güvenlik sertifikasyonu veya bağımsız denetim yok.
 - Tasarımın varsaydığı Cloud Tasks semantiği (ADR-003/011/017), sahibin bulut spike'ını (C1–C9 kontrolleri, **ÇALIŞTIRILMADI**)
   çalıştırmasına kadar **doğrulanmamıştır**. Varsayımlar yanlışsa tasarım yanlış duruma değil, fazladan görevlere dönüşür.
 - Redis Lua betikleri ve adaptörleri gerçek Redis'e karşı yalnızca CI'da çalışır; geliştirici Windows makinesinde Redis yoktur.
@@ -171,7 +173,8 @@ Upstash hiç ölçülmedi. "10.000 RPS" gibi bir verim iddia edilmez ve gösteri
 
 ## Bulut dağıtım durumu
 
-**Başlanmadı.** Google Cloud projesi, faturalandırma, Cloud Run servisi, kuyruk, Scheduler işi veya Upstash veritabanı yoktur.
+**Google Cloud yolu: başlanmadı.** Google Cloud projesi, faturalandırma, Cloud Run servisi, kuyruk veya Scheduler işi yoktur (C1-C9 ÇALIŞTIRILMADI).
+Ücretsiz katmanlarda (Render free, Firebase Spark, Upstash) ilk canlı dağıtım 2026-10-22/23'te bir kez çalıştırılmıştır ve geçicidir; rakamlar birer çalıştırmadır (bkz. [docs/TASKS.md](docs/TASKS.md), "B9-9 live results").
 Altyapı betikleri, API ve worker Dockerfile'ları, korumalı deploy/shutdown sarmalayıcıları, yönetici yetkisi verme betiği ve demo tohum betiği
 yazılmış ve yalnızca çevrimdışı veya emülatörde test edilmiştir ([infra/README.md](infra/README.md), [infra/CLOUD_VERIFICATION.md](infra/CLOUD_VERIFICATION.md));
 durum değiştiren her adım sahibin açık onayını gerektirir ve varsayılan olarak dry-run'dır. Yerel hazırlık kontrolü: `node scripts/preflight.mjs`

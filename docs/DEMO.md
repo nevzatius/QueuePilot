@@ -2,11 +2,11 @@
 
 Audience: software engineers, architects, technical recruiters. Length: about 10 minutes.
 **Label this clearly as a local emulator demonstration.** Sign-in uses the Firebase Auth *emulator's* Google provider, Firestore is the emulator,
-the queue is an in-process model rate-limited to 20 dispatches/s, and nothing runs on Google Cloud. Real Google OAuth, Cloud Run, Cloud Tasks and Upstash have not been exercised.
+the queue is an in-process model rate-limited to 20 dispatches/s, and nothing runs on Google Cloud. A first live deployment on free tiers (Render free, Firebase Spark, Upstash) was run once on 2026-10-22/23 and is temporary; Cloud Run and Cloud Tasks have not been exercised.
 
 **Local emulator demo versus cloud deployment.** This script demonstrates the first only. Preparing a cloud deployment (Dockerfiles, `scripts/deploy.mjs`,
 `scripts/seed-demo.mjs`, `scripts/grant-role.mjs`, `scripts/preflight.mjs`; see [DEPLOYMENT_RUNBOOK.md](DEPLOYMENT_RUNBOOK.md)) does not change what can be claimed:
-no cloud demo has been run, and a future cloud demo will need its own rehearsal and its own, separately labelled numbers.
+no rehearsed cloud demo has been run (the free-tier deployment above was a single live run, and its figures are one run each), and a future cloud demo will need its own rehearsal and its own, separately labelled numbers.
 
 ## What is verified versus what is rehearsed
 
@@ -46,4 +46,4 @@ If the UI wiring is not ready, run the script-driven version (`node docs/verific
 
 ## Limits slide (say these out loud)
 
-Not deployed. C1–C9 cloud checks not run. No production-readiness, cloud scalability or security-certification claim. No real-Redis load benchmark. Local numbers only.
+Not deployed to Google Cloud; a free-tier deployment (Render free, Firebase Spark, Upstash) was run once on 2026-10-22/23 and is temporary. C1–C9 cloud checks not run. Cloud figures are one run each. No production-readiness, cloud scalability or security-certification claim. No real-Redis load benchmark. Local numbers only.
