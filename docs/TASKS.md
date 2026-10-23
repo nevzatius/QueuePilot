@@ -215,6 +215,42 @@ one real shutdown (owner, needs a demo project).
 - **Before B9-9 (PR #4 F8):** run the emulator suite, T1-T13 and the race suites once with the `qstash` local profile; the factory never selects it today, so nothing has exercised it end to end.
 - **Ownership note (PR #4 F10):** `apps/worker/README.md` is Codex-owned and was edited in B9-1 and B9-2 (docs lines only); flag it in the PR ownership note.
 
+## B10-B13 (post-B9, planned; start only after the owner schedules them)
+
+Source: ADR-020. Every item carries the budget table of ADR-020 decision 8. Nothing here is started or measured.
+
+### B10 Demo job: webhook + built-in receiver
+- **Accept:**
+  - Scenarios: ok, always 500, slow, fail-first-then-ok.
+  - Every attempt carries a stable `Idempotency-Key` (the requestId) and an attempt number header.
+  - The receiver endpoint is signed (shared secret); unsigned calls are rejected and write nothing.
+  - Receiver counters live in their own Firestore collection (one document per tenant and idempotency key); the worker logic never reads it; never Redis (ADR-006).
+  - Triage still runs before delivery and its output is in the payload.
+  - Contract change is versioned (request type/payload, possibly delivery events).
+  - The hosting service and the delivery timeout are decided and documented (a cold start adds 8-14 s).
+  - Budget table with separate rows for receiver counter writes and reads (normal and 5-attempt worst case).
+  - Unit and emulator tests for duplicate counting.
+  - No arbitrary destination URL.
+
+### B11 Timeline enrichment
+- **Accept:**
+  - Human-readable labels, step durations and a short "why this matters" note per event type.
+  - An optional dispatch step only if the budget table allows it.
+  - Polling read budget written down.
+- **Prerequisite:** the B9-5 remainder (`count()` stuck counts, time-based reconcile throttle, `RESOURCE_EXHAUSTED` classification; see PROJECT_STATE next step).
+
+### B12 Chaos
+- **Accept:**
+  - Per-request fault option with the gating of ADR-020 decision 6 (admin only, tenant `sandbox`, `QP_DEMO_CHAOS=true`, fixed allowlist, explicit production-guard rule).
+  - Abandon-after-send mechanism confirmed against ADR-014/015 (no process exit).
+  - Recovery time computed and written down, and stated on every recorded showcase run.
+  - Tests that the option is rejected for non-admins, for other tenants and when `QP_DEMO_CHAOS` is off.
+  - Export script and read-only viewer for the static showcase (ADR-020 decision 7), with a sanitization test (no uid, email or correlation id).
+
+### B13 Presentation
+- **B13a README first screen:** one-sentence definition (at-least-once + idempotent receiver, no "never twice"), jargon explained on first use, honest status.
+- **B13b GIF/video and live-demo link:** last, while the system is up.
+
 ## CCR log
 
 _(none)_  T1 row note: ADR-017 gives seq=2 after a lost API enqueue (the card text above still says seq=1).
