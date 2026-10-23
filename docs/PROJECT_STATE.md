@@ -7,8 +7,7 @@ Last updated: 2026-10-23, by Claude Code (B9-7 and its review fixes merged as PR
 
 Architecture v0.2 frozen (ADR-009 to ADR-018), plus ADR-019 (free-tier platform, amended 2026-10-22). `main` = `a485a81`: B1-B6, B7 and B9-0 to B9-4, B9-6, B9-7 (with review fixes) are in.
 Remote: private `github.com/nevzatius/QueuePilot`. Free-tier cloud resources exist since the first live run (2026-10-22/23): Firebase Spark project, two Render free services, Upstash QStash schedule and Redis. No Google Cloud (billed) resource exists. The local MVP also works end to end on emulators.
-The owner has no billing account, so the target is free tiers only: Firebase Spark + Render free + Upstash QStash + Upstash Redis `queuepilot`.
-Cloud Tasks stays supported behind the queue factory. Owner runbook: `docs/DEPLOYMENT_RUNBOOK.md` ("Free-tier path" first, GCP path after it).
+The owner has no billing account, so the target is free tiers only (Firebase Spark, Render free, Upstash QStash + Redis `queuepilot`). Cloud Tasks stays supported behind the queue factory. Owner runbook: `docs/DEPLOYMENT_RUNBOOK.md` ("Free-tier path" first, GCP path after it).
 
 ## Milestones
 
@@ -57,3 +56,4 @@ T3 `.claude/agents/architecture-reviewer.md` is stale against ADR-017; T4 stale 
 ## Next step
 
 1. Merge PR #11. 2. The B9-5 remainder (`count()` stuck counts, time-based reconcile throttle also for `/internal/reconcile`, `RESOURCE_EXHAUSTED` classification) stays open: it protects the Spark read budget and is a prerequisite before any feature that adds polling or reads (planned B11). 3. Owner: close the open B9-9 live checks, then shut down (runbook step 11) when the demo is no longer needed.
+4. Planned, not scheduled: ADR-020 (webhook demo job) and TASKS "B10-B13".
