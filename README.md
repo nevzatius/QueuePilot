@@ -171,7 +171,7 @@ process, 3 repetitions, medians):**
 These numbers are **not production benchmarks**. The load generator shares the machine with the system under test; Firestore
 is the emulator; end-to-end completion times are bounded by the in-process local queue, which is rate-limited to 20 dispatches/s;
 the Redis-enabled variant against a real Redis was **not run** (only Redis off, and Redis enabled but unreachable); k6 was
-not run; Cloud Run, Cloud Tasks and Upstash were never measured. No throughput figure such as "10,000 RPS" is claimed or
+not run; Upstash QStash and Redis were used in one live free-tier run (n=1), but there is no Redis load benchmark, and Cloud Run and Cloud Tasks were never measured. No throughput figure such as "10,000 RPS" is claimed or
 demonstrated.
 
 ## Known limitations
@@ -192,7 +192,7 @@ Infrastructure scripts, API and worker Dockerfiles, guarded deploy/shutdown wrap
 tested offline or on emulators only ([infra/README.md](infra/README.md), [infra/CLOUD_VERIFICATION.md](infra/CLOUD_VERIFICATION.md)); every state-changing
 step needs explicit owner approval and is dry-run by default. Check readiness locally with `node scripts/preflight.mjs` (it never contacts Google Cloud unless the owner adds `--run`, which only reads).
 The step-by-step owner runbook is in [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md). The local emulator demo and a cloud deployment are different
-things: the former is what this repository demonstrates today, the latter is unverified (C1-C9, real Google OAuth, Cloud Run/Tasks behaviour and Upstash/TLS are NOT RUN).
+things: the former is what this repository demonstrates today, the latter is unverified (C1-C9, real Google OAuth, Cloud Run/Tasks behaviour, real-Redis load and k6 are NOT RUN; Upstash QStash and Redis were used only in the single free-tier run).
 
 ## GitHub Actions verification
 
