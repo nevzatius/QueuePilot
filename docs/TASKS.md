@@ -248,7 +248,7 @@ Source: ADR-020. Every item carries the budget table of ADR-020 decision 8. Noth
   - Export script and read-only viewer for the static showcase (ADR-020 decision 7), with a sanitization test (no uid, email or correlation id).
 
 ### B13 Presentation
-- **B13a README first screen:** one-sentence definition (at-least-once + idempotent receiver, no "never twice"), jargon explained on first use, honest status.
+- **B13a README first screen:** one-sentence definition (at-least-once + idempotent receiver, no "never twice"), jargon explained on first use, honest status. **README first screen DONE** in the `docs: README refresh, use cases and live demo script` PR (README.md and README.tr.md: one-sentence definition, parcel analogy, jargon, at-least-once wording, honest status; Technology text aligned with the free-tier run). Also in that PR: `docs/USE_CASES.md` (five illustrative domains, Turkish) and `docs/DEMO.md` rewritten as the live free-tier presentation script (Turkish, with the old local emulator demo as an appendix). **B13b stays open.** The "idempotent receiver" wording waits for B10; the README says only what exists today.
 - **B13b GIF/video and live-demo link:** last, while the system is up.
 
 B9-9b/9c (stale README/DEMO/PROJECT_STATE claims) were fixed in PR #11 and PR #14.

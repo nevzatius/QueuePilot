@@ -2,16 +2,28 @@
 
 [English](README.md) · [Mimari](docs/ARCHITECTURE.md) · [Kararlar (ADR)](docs/DECISIONS.md) · [Görevler](docs/TASKS.md) · [Proje durumu](docs/PROJECT_STATE.md)
 
-QueuePilot, **kalıcı (durable) istek kabulü ve asenkron işleme** üzerine bir mühendislik vitrin projesidir.
+QueuePilot, **kalıcı (durable) istek kabulü ve asenkron işleme** için bir referans uygulamadır: istekleri hızlı kabul eder,
+kabul edilmiş işi kaybetmez ve tekrarları zararsız hale getirir. Hazır bir ürün değil, tek küçük iş (servis taleplerinin
+deterministik değerlendirmesi, triage) üzerinde gösterilen bir kalıptır.
+
 İstemciler ani yük dalgaları (burst) halinde istek gönderir. API her isteği `202 Accepted` yanıtı vermeden önce
 kalıcı olarak saklar; bağımsız bir worker isteği daha sonra yeniden deneme, kira (lease) ve kaybolan işi geri
 kazanan bir reconciler ile işler.
 
 **Durum:** Yerel MVP (API, worker, reconciler, Redis limitleri, React paneli) Firebase emülatörlerinde uçtan uca
-çalışır ve CI'dan geçer. **Google Cloud'a hiçbir şey dağıtılmamıştır**; Google Cloud kontrolleri (C1-C9) ÇALIŞTIRILMADI.
-Ücretsiz katmanlarda (Render free, Firebase Spark, Upstash) ilk canlı dağıtım 2026-10-22/23'te bir kez çalıştırılmıştır ve geçicidir;
-bulut rakamları birer çalıştırmadır.
-Bkz. [Bilinen sınırlamalar](#bilinen-sınırlamalar) ve [Bulut dağıtım durumu](#bulut-dağıtım-durumu).
+çalışır ve CI'dan geçer; buna ek olarak 2026-10-22/23'te **tek bir geçici ücretsiz katman çalıştırması** (Render free, Firebase Spark,
+Upstash) yapılmıştır. Google Cloud yolu (Cloud Run, Cloud Tasks, Cloud Scheduler) **çalıştırılmadı**: C1-C9 kontrolleri ÇALIŞTIRILMADI.
+Ücretsiz katman çalıştırmasındaki her rakam tek bir çalıştırmadır (n=1). Bkz. [Bilinen sınırlamalar](#bilinen-sınırlamalar) ve [Bulut dağıtım durumu](#bulut-dağıtım-durumu).
+
+- **Bu çalıştırmada canlı görülenler (her biri n=1):** Firebase Hosting'den Google ile giriş; tarayıcıdan farklı origin'e çağrı (CORS); bir
+  isteğin kabul edilmesi, kuyruğa girmesi, worker tarafından işlenmesi ve Firestore'da `COMPLETED` yazılması; worker'ın dahili
+  uç noktasına imzasız çağrının `401` dönmesi; art arda 15 saatlik scheduler tick'inin teslim edilmesi; soğuk başlangıçlar (API ile
+  kullanılabilir panele yaklaşık 30 s; uyuyan worker'da *Accepted* ile *Processing started* arası yaklaşık 25 s; işlemin kendisi yaklaşık 1 s).
+- **Otomatik testlerle kapsananlar, canlı gösterilmeyenler:** idempotent tekrar (replay), mükerrer teslimat bastırma, kira devralma
+  (lease takeover), yeniden deneme bütçesi ve reconciler (modellenmiş kuyrukta domain ve worker testleri T1-T13, emülatör entegrasyon
+  setleri; replay, çakışma ve mükerrer teslimat için ayrıca yerel emülatör e2e betiği).
+- **Yapılmadı:** webhook teslimatı, kaos / hata enjeksiyonu ve herkese açık vitrin (yalnızca planlı, [ADR-020](docs/DECISIONS.md));
+  bulut ölçeklenebilirliği veya production-hazırlık iddiası; Google Cloud yolu.
 
 ## Proje neden var?
 
@@ -20,15 +32,37 @@ zararlı biçimde iki kez işlememek ve bir kiracının (tenant) diğerlerini a�
 probleme bilinçli olarak küçük tutulmuş bir alanda (*burst kabulü → kalıcı kayıt → hız sınırlı asenkron değerlendirme →
 durum takibi*) bir çözüm gösterir ve **neyi iddia etmediğini** açıkça belirtir (aşağıya bakın).
 
+**Bir benzetme (yalnızca benzetme).** Bir kargo şirketi düşünün. Gişe kolinizi kabul ettiğinde bir makbuz alırsınız: bu `HTTP 202`
+demektir ve koli sisteme kaydedildi anlamına gelir, teslim edildi anlamına gelmez. Teslimat daha sonra olur. Kolinize atanan kurye
+gelmezse süresi dolunca başka bir kurye devralır; ayrıca bir kontrolcü depoyu gezip kimsenin taşımadığı kolileri arar. Aynı koliyi
+aynı referans numarasıyla iki kez kaydederseniz yine tek koli olur. QueuePilot istekler için aynısını yapar; gerçek bir kargo
+şirketinden farkı, dış dünyaya giden gerçek bir yan etkisinin olmaması, yalnızca triage sonucunu üretmesidir.
+
+**Bu depoda kullanılan terimler (bir kez açıklanır):**
+
+- **Lease (kira)**: bir işin süreli sahipliği. Worker işlemeden önce 60 s'lik bir kira alır; sonucu yalnızca mevcut kira sahibi
+  yazabilir, bu yüzden takılıp kalmış eski bir worker yeni sonucun üzerine yazamaz.
+- **Reconciler**: zamanlanmış çalışan, uyandırması kaybolmuş veya worker'ı ortadan kaybolmuş istekleri bulup yeniden gönderen kontrolcü.
+- **Idempotency key**: istemcinin bir `POST` ile gönderdiği anahtar. Aynı anahtar ve aynı gövde, ikinci bir istek yaratmak yerine
+  ilk isteği döndürür.
+- **At-least-once (en az bir kez) teslimat**: bir iş worker'a birden fazla kez teslim edilebilir ama sessizce düşmez. QueuePilot
+  **uygulama düzeyinde korumalarla (idempotency, kira, deneme bütçesi, mutlak terminal durumlar) at-least-once** sunar;
+  **exactly-once (tam bir kez) iddiası yoktur**.
+
 ## Teknolojiler
 
 Node.js 24 · TypeScript (strict) · Fastify · Zod · Firestore (doğruluk kaynağı) · Firebase Authentication (Google ile
-giriş) · Google Cloud Tasks · Redis (ioredis; yalnızca limit ve önbellek) · React + Vite + Tailwind · pnpm 10 workspace ·
-Vitest · GitHub Actions. Hedef platform (henüz dağıtılmadı): Cloud Run, Cloud Scheduler, Firebase Hosting, bölge `europe-west1`.
+giriş) · Google Cloud Tasks veya Upstash QStash (seçilebilir kuyruk adaptörleri) · Redis (ioredis; yalnızca limit ve önbellek) ·
+React + Vite + Tailwind · pnpm 10 workspace · Vitest · GitHub Actions.
+Tasarımın hedef platformu (**çalıştırılmadı**): Cloud Run, Cloud Tasks, Cloud Scheduler, Firebase Hosting, bölge `europe-west1`.
+Tek geçici canlı çalıştırma bunun yerine Render free (API ve worker iki ayrı servis), Firebase Spark (Auth, Firestore, Hosting) ve
+Upstash (kuyruk ve saatlik zamanlayıcı olarak QStash, Redis) kullandı; bkz. [ADR-019](docs/DECISIONS.md).
 
 Proje modüler bir monolittir: `packages/contracts` (Zod şemaları), `packages/domain` (saf durum makinesi ve karar
 tabloları), `packages/core` (adaptörler), `apps/api`, `apps/worker`, `apps/web`. Bağımlılık yönü ESLint ile zorlanır.
 Tam tasarım: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (İngilizce). Akış diyagramı için [README.md](README.md) dosyasına bakın.
+Diyagram Google Cloud tasarımını gösterir. Ücretsiz katman çalıştırması Cloud Tasks ve Cloud Scheduler yerine Upstash QStash kullandı
+(kuyruk ve dakikada bir yerine saatlik reconcile zamanlaması); akışın geri kalanı aynıdır.
 
 ## İstek yaşam döngüsü
 
@@ -37,7 +71,7 @@ Tam tasarım: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (İngilizce). Akış 
 2. Tek bir atomik Firestore yazımı idempotency kaydını, isteği (`ACCEPTED`) ve ilk olayı oluşturur. **Bu commit başarılı
    olduğunda istek kalıcı olarak kabul edilmiştir** ve API `202` döner. Commit başarısız olursa veya zaman aşımına uğrarsa
    `503` döner; istemci aynı anahtarla tekrar dener.
-3. API ardından Cloud Tasks'ta en iyi çaba (best-effort) bir uyandırma görevi oluşturur. Başarısız olursa reconciler
+3. API ardından kuyrukta (tasarımda Cloud Tasks, ücretsiz katman çalıştırmasında QStash) en iyi çaba (best-effort) bir uyandırma görevi oluşturur. Başarısız olursa reconciler
    işi geri kazanır.
 4. Worker, bir Firestore transaction'ında kira alır, deterministik değerlendirmeyi çalıştırır ve sonucu kira ile
    korunmuş (fenced) olarak `COMPLETED` (veya `FAILED`) şeklinde yazar. Durumlar: `ACCEPTED → PROCESSING → COMPLETED | FAILED`.
@@ -166,7 +200,7 @@ Cloud Tasks hiç ölçülmedi. "10.000 RPS" gibi bir verim iddia edilmez ve gös
 - Tasarımın varsaydığı Cloud Tasks semantiği (ADR-003/011/017), sahibin bulut spike'ını (C1–C9 kontrolleri, **ÇALIŞTIRILMADI**)
   çalıştırmasına kadar **doğrulanmamıştır**. Varsayımlar yanlışsa tasarım yanlış duruma değil, fazladan görevlere dönüşür.
 - Redis Lua betikleri ve adaptörleri gerçek Redis'e karşı yalnızca CI'da çalışır; geliştirici Windows makinesinde Redis yoktur.
-- Google ile giriş yalnızca Auth emülatörü üzerinden denenmiştir; gerçek Google OAuth kullanılmamıştır.
+- Google ile giriş gerçek Google'a karşı yalnızca bir kez, ücretsiz katman çalıştırmasında Firebase Hosting'den denenmiştir (n=1); diğer tüm testler Auth emülatörünü kullanır.
 - Yük rakamları yereldir ve emülatör tabanlıdır (yukarıya bakın). Bulut ölçeklenebilirliği iddia edilmez.
 - Başarısız isteklerin yönetici tarafından yeniden denenmesi bilerek etkinleştirilmemiştir. Henüz lisans dosyası yoktur; lisans konusu
   sahibin kararını beklemektedir.
@@ -179,7 +213,7 @@ Altyapı betikleri, API ve worker Dockerfile'ları, korumalı deploy/shutdown sa
 yazılmış ve yalnızca çevrimdışı veya emülatörde test edilmiştir ([infra/README.md](infra/README.md), [infra/CLOUD_VERIFICATION.md](infra/CLOUD_VERIFICATION.md));
 durum değiştiren her adım sahibin açık onayını gerektirir ve varsayılan olarak dry-run'dır. Yerel hazırlık kontrolü: `node scripts/preflight.mjs`
 (sahip `--run` eklemedikçe Google Cloud'a bağlanmaz; `--run` yalnızca okur). Adım adım sahip rehberi: [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md). Yerel emülatör demosu ile bulut
-dağıtımı farklı şeylerdir: bugün gösterilen yalnızca ilkidir; bulut tarafı doğrulanmamıştır (C1-C9, gerçek Google OAuth, Cloud Run/Tasks davranışı, gerçek Redis yükü ve k6 ÇALIŞTIRILMADI; Upstash QStash ve Redis yalnızca tek bir ücretsiz-katman çalıştırmasında kullanıldı).
+dağıtımı farklı şeylerdir: bugün gösterilen yalnızca ilkidir; bulut tarafı doğrulanmamıştır (C1-C9, Cloud Run/Tasks davranışı, gerçek Redis yükü ve k6 ÇALIŞTIRILMADI; gerçek Google ile giriş, Upstash QStash ve Redis yalnızca tek bir ücretsiz-katman çalıştırmasında kullanıldı).
 
 ## GitHub Actions doğrulaması
 

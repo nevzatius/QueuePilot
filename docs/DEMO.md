@@ -1,49 +1,170 @@
-# QueuePilot demo script (local emulator demonstration)
+# QueuePilot canlı sunum betiği (5-10 dakika)
 
-Audience: software engineers, architects, technical recruiters. Length: about 10 minutes.
-**Label this clearly as a local emulator demonstration.** Sign-in uses the Firebase Auth *emulator's* Google provider, Firestore is the emulator,
-the queue is an in-process model rate-limited to 20 dispatches/s, and nothing runs on Google Cloud. A first live deployment on free tiers (Render free, Firebase Spark, Upstash) was run once on 2026-10-22/23 and is temporary; Cloud Run and Cloud Tasks have not been exercised.
+Hedef kitle: teknik dinleyici (mühendisler, mülakatçılar). Dil: Türkçe. Süre: 5-10 dakika.
+Bu betik, 2026-10-22/23'te çalıştırılan **geçici ücretsiz katman dağıtımını** (Render free, Firebase Spark, Upstash) gösterir. Dağıtım
+geçicidir; ortam kapatıldıktan sonra bu betik geçersizdir ve yalnızca [Ek: yerel emülatör demosu](#ek-yerel-emülatör-demosu-yedek-plan) kalır.
 
-**Local emulator demo versus cloud deployment.** This script demonstrates the first only. Preparing a cloud deployment (Dockerfiles, `scripts/deploy.mjs`,
-`scripts/seed-demo.mjs`, `scripts/grant-role.mjs`, `scripts/preflight.mjs`; see [DEPLOYMENT_RUNBOOK.md](DEPLOYMENT_RUNBOOK.md)) does not change what can be claimed:
-no rehearsed cloud demo has been run (the free-tier deployment above was a single live run, and its figures are one run each), and a future cloud demo will need its own rehearsal and its own, separately labelled numbers.
+Bu depo **özeldir** ve canlı sistem geçicidir; betikte gerçek URL, proje kimliği/numarası, uid, e-posta, IP veya gizli değer yoktur.
+Yer tutucular: `<HOSTING_URL>` (Firebase Hosting adresi), `<API_URL>` ve `<WORKER_URL>` (Render servisleri). Gerçek değerleri sunum
+makinesinde bir notta tutun, depoya yazmayın.
 
-## What is verified versus what is rehearsed
+## Dürüstlük kuralı: ne gösterilir, ne gösterilmez
 
-| Step | Backed by | Status |
+| Konu | Durum | Kaynak |
 |---|---|---|
-| Accept → process → complete, replay, 409, duplicate delivery, cross-tenant/user isolation, Redis-down fail-closed | `docs/verification/e2e-local.mjs`, 25 checks against real built API + worker + emulators | verified 2026-10-20 (records in `docs/PROJECT_STATE.md`) |
-| Quota, burst and fail-closed behaviour on real Redis | `tests/integration/redis*.test.ts`, `apps/api/test/integration/redis-quota.test.ts` | PASS in GitHub Actions (see the Actions tab) |
-| Spike / recovery numbers | `tests/load/results/2026-10-20T10-19-00-417Z/REPORT.md` | local, 3 repetitions, emulators |
-| API/worker container images build, answer `/health` with production-shaped settings, refuse unsafe production config, worker rejects unauthenticated calls, non-root over read-only files, exit 0 on SIGTERM | `docker-images` CI job (`scripts/docker-smoke.mjs`) | CI only (see the Actions tab); not run locally (no Docker on the dev machine) |
-| Click-through in the React UI against the live local API | – | **not rehearsed by the maintainers yet**; do a dry run before presenting |
+| Hosting'den Google ile giriş, CORS çağrısı, kabul → kuyruk → worker → Firestore'da `COMPLETED` | **Canlı görüldü, her biri bir koşu (n=1)** | [TASKS.md](TASKS.md) "B9-9 live results" madde 4, 5 |
+| Worker'ın dahili uç noktasına imzasız çağrı `401` | Canlı görüldü (n=1) | B9-9 madde 5 |
+| 15 ardışık saatlik scheduler tick'i teslim edildi | Canlı görüldü (n=1) | B9-9 madde 6 |
+| Soğuk başlangıç: API ile kullanılabilir panele ≈ 30 s (el kronometresi); uyuyan worker'da *Accepted* → *Processing started* ≈ 25 s; işlem ≈ 1 s | Ölçüldü, tek koşu, yaklaşık | B9-9 madde 7 |
+| Idempotency, lease, retry, reconciler | Var; **testlerle** ve yerel emülatör e2e ile kapsanıyor, **canlıda gösterilmedi** | Aşağıda (c) |
+| Webhook teslimatı, kaos / hata enjeksiyonu, herkese açık vitrin | **Yapılmadı**, yalnızca planlı | [ADR-020](DECISIONS.md), TASKS B10-B13 |
+| Exactly-once | **Hiç iddia edilmedi** | [ARCHITECTURE §7](ARCHITECTURE.md) "Non-claims" |
+| Bulut ölçeklenebilirliği, production-hazırlık | **İddia edilmez** | README "Known limitations" |
+| Google Cloud yolu (Cloud Run, Cloud Tasks, C1-C9) | **Çalıştırılmadı** | ARCHITECTURE §8, TASKS |
 
-## Setup (before the audience arrives)
+---
 
-Follow the README "Local setup" and [docs/verification/README.md](verification/README.md): build, start the emulators, start the worker, start the API, then the web app
-(`pnpm --filter @queuepilot/web dev`) pointed at the local API and Auth emulator via the `VITE_*` variables in `apps/web/src/config.ts`.
-If the UI wiring is not ready, run the script-driven version (`node docs/verification/e2e-local.mjs`) and narrate its output; it covers the same flow.
+## (a) Sunumdan önce (T-15 dk)
 
-## Story (10 steps)
+Ücretsiz servisler 15 dakika trafiksiz kalınca uyur ([ADR-019](DECISIONS.md), yayımlanmış Render davranışı; spike'ta tek ölçüm). Bu yüzden
+ısınma iki kez yapılır: T-15 ve T-3.
 
-1. **Problem.** Bursty service requests: accept fast, never lose work, never process harmfully twice, protect shared capacity.
-2. **Sign in** with Google (emulator). One slide on membership: tenant and role come from Firestore, not token claims.
-3. **Submit a request.** Show `202 Accepted`: the response means the request is *committed in Firestore*, not yet processed (invariant I1).
-4. **Observe `ACCEPTED`** (or the derived `QUEUED`) in the dashboard.
-5. **Observe `PROCESSING`**: the worker took a lease (60 s) in a transaction; mention fencing, only the lease holder can finish.
-6. **Observe `COMPLETED`** and open the **event timeline**: ACCEPTED, lease, completion. Triage output is deterministic for a given input and rules version.
-7. **View metrics** (counts by status, backlog, stuck/attention counters; cached 5 s).
-8. **Idempotent replay.** Send the same `Idempotency-Key` and body again: same `requestId`, `Idempotent-Replayed: true`, no second charge to the quota. Change the body: `409`.
-9. **Controlled overload.** Explain, then show the local spike result: at 100 req/s against a 40 req/s per-instance admission limit, about 353 of 800 were accepted, **all** accepted ones completed, the rest were shed with `503 OVERLOADED` and `Retry-After`. Say plainly that this is a laptop with emulators. Contrast with Redis quotas: over-budget users get `429`, and if Redis is down enforced tenants get `503 QUOTA_UNAVAILABLE` (fail closed) while replays still work.
-10. **Show the proof.** GitHub Actions run on `main`: lint, typecheck, unit, web, infrastructure, emulator integration, real-Redis integration, smoke. Then the honest limits slide below.
+**T-15 dk:**
 
-## Reliability talking points (keep brief)
+1. `<HOSTING_URL>` adresini açın. Arayüz "The service is waking up, this can take up to a minute." bildirimini gösterebilir; panel
+   hazır olana kadar bekleyin (n=1 ölçüm: yaklaşık 30 s).
+2. **Sahip hesabıyla** Google ile giriş yapın. Kayıt kapalıdır (`openSignup=false`): başka bir hesap "Sign-up is closed for this workspace"
+   ile reddedilir. Yönetici rolünü bu hesaba sahip betikle vermiştir; üyelik Firestore'dadır.
+3. Bir talep gönderin (New request). Bu, hem API'yi hem de QStash üzerinden worker'ı uyandırır.
+4. Talebin `COMPLETED` olduğunu doğrulayın. Detay sayfasında **yenileme düğmesi yoktur**: sayfa durum bitene kadar 30 s'de bir kendini
+   yeniler (`POLL_INTERVAL_MS = 30_000`); beklemek istemezseniz tarayıcıda F5.
+5. Kota notu: bu hesabın günlük gönderim limiti vardır. Kurulum betiğinin varsayılanları dakikada 10, kullanıcı başına günde 30, kiracı
+   başına günde 300'dür (`scripts/seed-demo.mjs`, ADR-019); canlı belge bu hazırlık için yeniden okunmadı. **Prova ve ısınma
+   gönderimleri de bu sayıya girer**, bu yüzden toplam gönderimi kısa tutun (aşağıdaki akış 2-3 talep kullanır).
 
-- Delivery is **at-least-once with application guards**; exactly-once is not claimed.
-- ADR-017: a Cloud Tasks task is only a wake-up; Firestore decides. The reconciler re-dispatches lost work; if it is down, requests stay durable and visible as stuck.
-- Redis never holds business state. Losing it degrades rate limiting and fails quotas closed; it cannot lose or duplicate requests.
-- Failure injection: duplicate delivery, lease takeover, lost enqueue are covered by domain race/fuzz tests and worker tests T1–T13 on a modelled queue.
+**T-3 dk:** yalnızca **güvenli modda** worker'ı tekrar uyandırın: yeni bir talep gönderin, `COMPLETED` olmasını bekleyin. **Dramatik modda
+bunu yapmayın** (aşağıya bakın).
 
-## Limits slide (say these out loud)
+**Önceden alınacak ekran görüntüleri (yedek plan; depoya koymayın, hesap/proje kimlikleri içerebilir):**
 
-Not deployed to Google Cloud; a free-tier deployment (Render free, Firebase Spark, Upstash) was run once on 2026-10-22/23 and is temporary. C1–C9 cloud checks not run. Cloud figures are one run each. No production-readiness, cloud scalability or security-certification claim. No real-Redis load benchmark. Local numbers only.
+- Panel (talep listesi).
+- Talep detayı: özet (deneme `1 / 5`, mükerrer teslimat `0`) ve zaman çizelgesi.
+- Upstash konsolunda QStash günlüğü: saatlik tick'ler (bu çalıştırmada 15 ardışık tick, hepsi ilk denemede teslim edildi, her biri 24-29 s sürdü).
+  Göstermeden önce URL ve kimlik alanlarını kırpın veya bulanıklaştırın.
+
+---
+
+## (b) Akış ve dakika işaretleri
+
+Toplam yaklaşık 9 dakika. 5 dakikaya indirmek için: 5:45-6:30 (metrikler) ve 6:30-7:30 (idempotency) bölümlerini tek cümleye indirin.
+
+| Dakika | Bölüm | Ne yapılır / ne söylenir |
+|---|---|---|
+| 0:00-0:45 | **Problem** | Ani yük dalgası: isteği hızlı kabul et, kabul edileni kaybetme, tekrarı zararsız kıl, bir kiracının payını koru. Tek cümle: "QueuePilot, kalıcı istek kabulü ve asenkron işleme için bir referans uygulama; at-least-once teslimat, uygulama düzeyinde korumalarla." Kargo benzetmesi: makbuz = `202`, teslimat sonra, gelmeyen kurye yerine yenisi, aynı koliyi iki kez kaydetmek tek koli. |
+| 0:45-1:45 | **Giriş ve üyelik** | Google ile giriş (kayıt kapalı, sahip hesabı). Kiracı ve rol **Firestore'daki `memberships/{uid}` kaydından** gelir, token claim'inden değil ([ARCHITECTURE §11](ARCHITECTURE.md), ADR-008). Rol kullanıcı girdisi olamaz; yönetici yalnızca sahip betiğiyle verilir. Liste varsayılan olarak "My requests"tir; yönetici rolü olan hesapta ayrıca "All tenant requests" düğmesi görünür (üyeler yalnızca kendi taleplerini, yöneticiler tüm kiracıyı görür). |
+| 1:45-3:00 | **Talep gönder** | New request: türü ve önceliği doldurup gönderin. Arayüz "Request accepted. It is stored and will be processed; it has not been processed yet." der. Söylenecek: `202` = **kaydedildi (commit), işlendi demek değil** (I1). Kabul tek atomik Firestore yazımıdır (idempotency kaydı + talep + ilk olay); ondan sonra kuyruğa uyandırma görevi atılır. |
+| 3:00-5:45 | **Durumu izle, zaman çizelgesi, soğuk başlangıç** | "View request". Listede ilk durum "Queued" görünür (`ACCEPTED`, deneme 0; arayüzde türetilmiş görünüm), zaman çizelgesindeki olay "Accepted"dır. Ardından **Processing started** (aktör: Worker) ve **Completed**. Özet: deneme `1 / 5`, mükerrer teslimat `0` (n=1'de görülen değerler). Aşağıdaki soğuk başlangıç anlatısını buraya yerleştirin. Sayfa 30 s'de bir yenilenir; F5 ile hızlandırın. |
+| 5:45-6:30 | **Metrikler** | Metrics sekmesi: saklanan durumlara göre sayılar (Accepted, Processing, Completed, Failed) ve "Stuck" (15 dakikadan fazla gecikmiş, terminal olmayan talepler). Üretim zamanı ve kaynak (`redis`, `memory` veya `firestore`) altta yazar; sunucuda birkaç saniye önbelleğe alınır. |
+| 6:30-7:30 | **Idempotent tekrar** | Aşağıdaki kurala bakın: web arayüzü anahtarı **göstermez**, bu yüzden sözlü anlatılır. |
+| 7:30-8:30 | **Hata yönetimi** | Bölüm (c): lease devralma ve reconciler **testlerle** kapsanıyor, canlı gösterilmiyor. |
+| 8:30-9:15 | **Sınırlar slaytı ve sonraki adım** | Aşağıdaki sınırlar metnini yüksek sesle okuyun; ADR-020'yi "planlı" diye anın. |
+
+### Soğuk başlangıç anı: tasarımın bir özelliği olarak
+
+Anlatı: "Kuyruk yalnızca bir **uyandırma (wake-up)** sinyalidir; doğruluk kaynağı Firestore'dur (ADR-017). Zaman çizelgesindeki boşluk, uyuyan worker'ın
+uyanmasıdır. Talep o sırada zaten güvendeydi: `202` aldığımızda kayıt Firestore'daydı." Bu, ücretsiz katmanın bir yan etkisidir ve tasarımın
+neden kuyruğa doğruluk görevi yüklemediğini gösterir.
+
+- **Dramatik mod (uyuyan worker):** T-3 ısınmasını yapmayın. Son gönderimden bu yana en az 15 dakika geçmiş olmalı. Worker saatlik
+  scheduler tick'iyle de uyanır (bu çalıştırmada tick'ler saat başında görüldü); bu yüzden saat başından sonraki ilk 15 dakikada sunum yapmayın,
+  worker uyanık olabilir (çıkarım). Beklenti: *Accepted* ile *Processing started* arası **yaklaşık 25 s** (n=1). Çıplak uyuyan servis
+  yanıtı daha önceki spike'ta 8-14 s ölçüldü; Render belgeleri 50 s'ye kadar diyor (ADR-019), bu yüzden süreyi garanti etmeyin.
+- **Güvenli mod (ısınmış worker):** T-3 ısınmasını yapın. Aralık birkaç saniyeye iner; soğuk başlangıç anlatısını sözlü yapın ve
+  ekran görüntüsünü (dramatik modda alınmış zaman çizelgesi) gösterin.
+
+### Idempotent tekrar: web arayüzü ne yapıyor?
+
+`apps/web` incelendi: `Idempotency-Key` **kullanıcıya gösterilen veya girilen bir alan değildir**. Anahtar `createKeyManager` ile otomatik üretilir
+(`apps/web/src/lib/idempotency.ts`); yük (payload) değişmediği sürece aynı anahtar yeniden kullanılır, yani ağ hatasından sonraki "tekrar dene"
+aynı anahtarı gönderir ve arayüz metni bunu söyler ("Retrying keeps the same idempotency key, so the request cannot be created twice."). Başarılı gönderimden sonra
+anahtar sıfırlanır. **Bu nedenle sunumda canlı bir "aynı anahtarla ikinci gönderim" gösterilemez; sözlü anlatın ve testlere işaret edin:**
+
+- Aynı anahtar + aynı gövde: `202`, aynı `requestId`, `Idempotent-Replayed: true`; aynı anahtar + farklı gövde: `409 IDEMPOTENCY_KEY_REUSED` ([ARCHITECTURE §9](ARCHITECTURE.md)).
+- Kanıt: domain testleri (`packages/domain/test`), anahtar yöneticisi testi (`apps/web/src/lib/idempotency.test.ts`) ve yerel e2e betiği (`docs/verification/e2e-local.mjs`: replay ve `409` kontrolleri). Canlıda denenmedi.
+
+### Sınırlar slaytı (yüksek sesle söyleyin)
+
+Google Cloud'a dağıtım yok; Google Cloud kontrolleri (C1-C9) çalıştırılmadı. Gösterilen, 2026-10-22/23'te bir kez çalıştırılan geçici bir ücretsiz
+katman dağıtımıdır (Render free, Firebase Spark, Upstash); rakamlar birer koşudur (n=1). Exactly-once iddia edilmez. Bulut ölçeklenebilirliği
+ve production-hazırlık iddia edilmez; harici güvenlik denetimi yoktur. Webhook teslimatı, kaos / hata enjeksiyonu ve herkese açık vitrin yapılmadı,
+yalnızca planlıdır (ADR-020). Yük rakamları yerel, dizüstü bilgisayar + emülatör, üretim kıyaslaması değildir.
+
+---
+
+## (c) Hata yönetimi hakkında ne söylenir
+
+Söylenecek ve **söylenmeyecek** olanlar:
+
+- **Söylenir:** Worker bir işi aldıktan sonra çökerse, 60 s'lik lease dolunca bir sonraki teslimat işi devralır (`LEASE_TAKEOVER`); eski worker geç gelip sonucu yazmaya çalışırsa
+  lease eşleşmediği için reddedilir (I4, fencing). Kaybolan uyandırma görevini reconciler yeniden gönderir; deneme bütçesi (5) bitince talep `FAILED` olur ve
+  nedeni görünür kalır (I5). Dağıtım sorunu bir talebi asla `FAILED` yapmaz (ADR-017).
+- **Kanıt:** domain ve worker testleri (T1-T13: ör. T5 çökme sonrası devralma, T8 eşzamanlı iki teslimat, T10 lease kaybı, T11 iki eşzamanlı reconciler, T12 reconciler kapalı),
+  yarış ve fuzz testleri ([TASKS.md](TASKS.md) B4) ve yerel emülatör e2e betiği (replay, çakışma, mükerrer teslimat).
+- **Söylenmez / vaat edilmez:** lease devralma ve reconciler **canlıda gösterilmedi**. **Canlı çökme demosu vaat etmeyin.** Canlı sistemde bunu zorlayacak hata enjeksiyonu yoktur
+  (kaos aracı yalnızca planlıdır, ADR-020). Canlıda yalnızca reconciler uç noktasına tick'lerin teslim edildiği görüldü, kayıp bir işin kurtarıldığı görülmedi.
+- Kurtarma süresi hakkında soru gelirse: ücretsiz profilde reconciler saatte bir tick'ler (tasarımda dakikada bir); ADR-020 karar 5'in koddan çıkardığı tahmin, kuyruk yeniden
+  denemesi kaldığı sürece yaklaşık 1-2 dakika, yeniden denemeler bitince bir saate kadardır. **Bu, ölçülmemiş bir hesaptır.**
+
+---
+
+## (d) Bir şey yavaşsa veya bozuksa
+
+1. **Bekleme kuralı: 60 s.** Soğuk başlangıç beklenen bir durumdur (arayüz bildirimi 1 dakikaya kadar der). 60 s boyunca sakin kalın, anlatıyı sürdürün
+   ("kuyruk yalnızca uyandırma, talep güvende").
+2. 60 s sonra **ekran görüntülerine** geçin (panel, talep detayı + zaman çizelgesi, QStash tick günlüğü) ve nedenini dürüstçe söyleyin: ücretsiz servis veya ağ.
+3. Hâlâ gerekiyorsa **yerel yedek plana** geçin: Ek bölümü.
+4. Talep `FAILED` veya takılı kalırsa, bunu saklamayın: bu da ürünün göstermek istediği şeydir (durum ve neden görünür); ama canlı teşhis yapmayın, ekran görüntüsüne dönün.
+5. Giriş penceresi açılmazsa: tarayıcıda açılır pencere engelini kontrol edin; çalışmazsa ekran görüntülerine geçin.
+
+---
+
+## (e) Muhtemel sorular ve dürüst kısa cevaplar
+
+- **Exactly-once mı?** Hayır. At-least-once teslimat, uygulama düzeyinde korumalarla (idempotency, lease, deneme bütçesi, mutlak terminal durumlar). Aynı iş birden fazla kez teslim
+  edilebilir ve zararsız hale getirilir; exactly-once hiçbir yerde iddia edilmez ([ARCHITECTURE §7](ARCHITECTURE.md), ADR-017 sonuçları).
+- **Neden kuyruğa güvenmiyorsunuz?** Bir görevin varlığı veya yokluğu kuyruğun dışından kanıtlanamaz. Bu yüzden görev yalnızca uyandırmadır; çalışıp çalışmayacağına yalnızca Firestore karar verir
+  (lease, deneme bütçesi, terminal durum). Fazla görev 409/200 yanıtına mal olur, yanlış duruma değil ([ADR-017](DECISIONS.md)).
+- **Worker ölürse?** Lease süresi dolar, sonraki teslimat devralır; teslimat da kaybolduysa reconciler yeniden gönderir. Bu **testlerle** kapsanır (T5, T10, T12), canlıda gösterilmedi.
+- **Ölçeklenir mi?** İddia etmiyoruz. Ücretsiz katman sınırları ve kotalar bunu bilerek sınırlar: sandbox kiracısı için günde 300 talep (ADR-019; kullanıcı başına günde 30 kurulum betiği varsayılanıdır),
+  günlük 1.000 QStash mesajı, Spark'ta günlük 50K okuma / 20K yazma (bunlar yayımlanmış platform sınırlarıdır, ölçülmedi; ADR-019). Yerel rakamlar bir dizüstü bilgisayardaki emülatör sonuçlarıdır, bulutta hiçbir yük ölçülmedi.
+- **Güvenlik?** Üyelik ve rol Firestore'da (ADR-008); CORS izin listesi (canlıda Hosting origin'inden çağrı çalıştı; yabancı origin'den istek ayrıca doğrulanmadı); worker'da QStash imza doğrulaması
+  (imzasız çağrı `401`; gerçek anahtarlarla başarılı iş çıkarımla doğrulandı, JWT alanları incelenmedi); Redis yokken kotalar kapalı-başarısız (`503 QUOTA_UNAVAILABLE`, ADR-009). Harici denetim yoktur.
+- **Neden Render / ücretsiz katman?** Sahibin faturalandırma hesabı / kartı yok; Google Cloud yolu (Cloud Run, Cloud Tasks, Cloud Scheduler) faturalandırma gerektirir ([ADR-019](DECISIONS.md)).
+  Cloud Tasks adaptörü yapılandırmayla seçilebilir kalır ama canlıda doğrulanmadı.
+- **Sırada ne var?** ADR-020'de **planlı** iş: yerleşik alıcıya webhook teslimatı, zaman çizelgesi zenginleştirme, yönetici-yalnız kaos denemesi ve statik kayıtlı vitrin. **Hiçbiri başlamadı**;
+  zaman çizelgesi zenginleştirme (B11) için önce Firestore okuma bütçesi işi (B9-5 kalanı) gerekir.
+- **Üretime hazır mı?** Hayır. Tek bir geçici ücretsiz katman koşusu ve yerel testler vardır; README "Known limitations".
+- **Neden panel yavaş güncelleniyor?** Panel 30 s'de bir sorgular (Spark okuma bütçesi, ADR-019).
+
+---
+
+## Ek: yerel emülatör demosu (yedek plan)
+
+Canlı sistem kullanılamazsa yedek plan budur. **Bunu "yerel emülatör demosu" diye açıkça etiketleyin:** Firebase Auth *emülatörünün* Google sağlayıcısı, Firestore emülatörü, süreç içi
+kuyruk modeli (saniyede 20 dağıtımla sınırlı); Google Cloud'da hiçbir şey çalışmaz.
+
+**Hazırlık:** README "Local setup" ve [docs/verification/README.md](verification/README.md): derleme, emülatörler, worker, API; web uygulaması için `pnpm --filter @queuepilot/web dev`.
+Betik tabanlı sürüm: `node docs/verification/e2e-local.mjs` (25 PASS/FAIL kontrolü; gerçek derlenmiş API + worker + emülatörler; Redis gerekmez) çıktısını anlatın.
+
+**Doğrulanmış mı, prova edildi mi (dürüst durum):**
+
+| Adım | Dayanak | Durum |
+|---|---|---|
+| Kabul → işle → tamamla, replay, `409`, mükerrer teslimat, kiracı/kullanıcı yalıtımı, Redis kapalıyken kapalı-başarısız kota | `docs/verification/e2e-local.mjs` (25 kontrol) | Betik depoda; 2026-10-20'de geçtiği bu dosyanın önceki sürümünde yazılıydı, ama depoda saklanmış bir çıktı kaydı yok. **Sunumdan önce yeniden çalıştırın.** |
+| Kota, hız sınırı, kapalı-başarısız davranış, gerçek Redis | `tests/integration/redis*.test.ts`, `apps/api/test/integration/redis-quota.test.ts` | CI'da geçer (GitHub Actions sekmesine bakın) |
+| Spike / toparlanma sayıları | `tests/load/results/2026-10-20T10-19-00-417Z/REPORT.md` | Yerel, 3 tekrar, emülatör; üretim kıyaslaması değil |
+| React arayüzünde yerel API'ye karşı tıklama akışı | – | **Bakım ekibince prova edilmedi** (yerel emülatör karşısında); gösterilecekse önce deneme yapın |
+| Canlı ücretsiz katman akışı (bu betiğin ana bölümü) | B9-9 sonuçları | Tek koşu (n=1); sunum öncesi yukarıdaki (a) provası şart |
+
+Yerel akışta, canlıda gösterilemeyen şeyler de anlatılabilir: replay ve `409`; mükerrer teslimatın işlem yapmadan `200` dönmesi; Redis kapalıyken kapalı-başarısız kota
+(`503 QUOTA_UNAVAILABLE`, replay çalışmaya devam eder). Yerel yük denemesi (taban, ani yük, toparlanma) bir dizüstü bilgisayarda emülatörlerle yapılmıştır; bunları bulut rakamı gibi sunmayın.
