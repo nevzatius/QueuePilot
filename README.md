@@ -2,29 +2,62 @@
 
 [Türkçe](README.tr.md) · [Architecture](docs/ARCHITECTURE.md) · [Decisions (ADRs)](docs/DECISIONS.md) · [Tasks](docs/TASKS.md) · [Project state](docs/PROJECT_STATE.md)
 
-QueuePilot is an engineering showcase of **durable request ingestion with asynchronous processing**.
-Clients submit requests in bursts; the API persists each one before answering `202 Accepted`, and an
-independent worker processes it later, with retries, leases and a reconciler that recovers lost work.
+QueuePilot is a reference implementation of **durable request intake with asynchronous processing**: it accepts
+requests fast, never loses accepted work, and makes repeats harmless. It is a pattern demonstrated on one small job
+(deterministic triage of service requests), not a ready-made product.
 
-**Status:** the local MVP (API, worker, reconciler, Redis limits, React dashboard) works end to end on
-Firebase emulators and passes CI. **Nothing is deployed to Google Cloud**; the Google Cloud checks (C1-C9) are
-NOT RUN. A first live deployment on free tiers (Render free, Firebase Spark, Upstash) was run once on 2026-10-22/23 and is
-temporary; its cloud figures are one run each. See [Known limitations](#known-limitations) and [Cloud deployment status](#cloud-deployment-status).
+Clients submit requests in bursts; the API persists each one before answering `202 Accepted`, and an independent
+worker processes it later, with retries, leases and a reconciler that recovers lost work.
+
+**Status:** a local MVP (API, worker, reconciler, Redis limits, React dashboard) that works end to end on Firebase
+emulators and passes CI, plus **one temporary free-tier run** (Render free, Firebase Spark, Upstash) on 2026-10-22/23.
+The Google Cloud path (Cloud Run, Cloud Tasks, Cloud Scheduler) was **not run**: checks C1-C9 are NOT RUN. Every figure from the
+free-tier run is a single run (n=1). See [Known limitations](#known-limitations) and [Cloud deployment status](#cloud-deployment-status).
+
+- **Seen live in that run (n=1 each):** Google sign-in from Firebase Hosting; a browser call across origins (CORS); one request
+  accepted, queued, processed by the worker and committed `COMPLETED` in Firestore; an unsigned call to the worker's internal
+  endpoint answered `401`; 15 consecutive hourly scheduler ticks delivered; cold starts (API about 30 s to a usable dashboard; a
+  sleeping worker about 25 s from *Accepted* to *Processing started*; processing itself about 1 s).
+- **Covered by automated tests, not demonstrated live:** idempotent replay, duplicate-delivery suppression, lease takeover, the retry
+  budget and the reconciler (domain and worker tests T1-T13 on a modelled queue, the emulator integration suites, and the local
+  emulator e2e script for replay, conflict and duplicate delivery).
+- **Not done:** webhook delivery, chaos or fault injection and a public showcase (only planned, [ADR-020](docs/DECISIONS.md)); any
+  cloud scalability or production-readiness claim; the Google Cloud path.
 
 ## Why it exists
 
-Bursty traffic is a classic reliability problem: accepting work faster than it can be processed, without
-losing it, without processing it twice in a harmful way, and without letting one tenant starve the rest.
-QueuePilot demonstrates one answer to that problem on a deliberately small domain
-(*burst intake → durable acceptance → rate-limited async triage → status tracking*), and is explicit
-about what it does **not** claim (see below).
+Bursty traffic is a classic reliability problem: accepting work faster than it can be processed, without losing it,
+without processing it twice in a harmful way, and without letting one tenant starve the rest. QueuePilot demonstrates one
+answer on a deliberately small domain (*burst intake → durable acceptance → rate-limited async triage → status tracking*),
+and is explicit about what it does **not** claim (see below).
+
+**An analogy (it is only an analogy).** Think of a parcel service. When the counter accepts your parcel you get a receipt:
+that is `HTTP 202`, and it means the parcel is committed to the system, not that it has been delivered. Delivery happens later.
+If the courier assigned to your parcel does not show up, another courier takes over once the first courier's time is up, and a
+checker walks the depot looking for parcels nobody is carrying. If you register the same parcel twice with the same reference
+number, you still get one parcel. QueuePilot does the same for requests; unlike a real parcel service it has no real-world
+outbound side effect, only the triage result.
+
+**Terms used in this repository, explained once:**
+
+- **Lease**: time-limited ownership of a job. A worker takes a 60 s lease before processing; only the current lease holder can
+  commit the result, so a stalled worker cannot overwrite a newer one.
+- **Reconciler**: a checker that runs on a schedule, finds requests whose wake-up was lost or whose worker vanished, and
+  re-dispatches them.
+- **Idempotency key**: a client-chosen string sent with a `POST`. The same key with the same body returns the original request
+  instead of creating a second one.
+- **At-least-once delivery**: a job may be delivered to a worker more than once, but is not silently dropped. QueuePilot guarantees
+  **at-least-once with application-level guards** (idempotency, lease, attempt budget, absorbing terminal states). It makes **no
+  exactly-once claim**.
 
 ## Technology
 
 Node.js 24 · TypeScript (strict) · Fastify · Zod · Firestore (source of truth) · Firebase Authentication
-(Google sign-in) · Google Cloud Tasks · Redis via ioredis (limits and cache only) · React + Vite + Tailwind ·
-pnpm 10 workspaces · Vitest · GitHub Actions. Target platform (not yet deployed): Cloud Run, Cloud Scheduler,
-Firebase Hosting, region `europe-west1`.
+(Google sign-in) · Google Cloud Tasks or Upstash QStash (selectable queue adapters) · Redis via ioredis (limits and cache only) ·
+React + Vite + Tailwind · pnpm 10 workspaces · Vitest · GitHub Actions.
+Target platform of the design (**not run**): Cloud Run, Cloud Tasks, Cloud Scheduler, Firebase Hosting, region `europe-west1`.
+The one temporary live run used Render free (API and worker as two services), Firebase Spark (Auth, Firestore, Hosting) and
+Upstash (QStash as queue and hourly scheduler, Redis) instead; see [ADR-019](docs/DECISIONS.md).
 
 ```mermaid
 flowchart LR
@@ -39,6 +72,9 @@ flowchart LR
   W -->|getTask / createTask| CT
 ```
 
+The diagram shows the Google Cloud design. The free-tier run replaced Cloud Tasks and Cloud Scheduler with Upstash QStash (queue
+plus an hourly reconcile schedule, instead of once per minute); the rest of the flow is the same.
+
 It is a modular monolith: `packages/contracts` (Zod schemas), `packages/domain` (pure state machine and
 decision tables), `packages/core` (adapters), `apps/api`, `apps/worker`, `apps/web`. Dependency direction is
 enforced by ESLint. Full design: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -50,7 +86,7 @@ enforced by ESLint. Full design: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 2. One atomic Firestore write creates the idempotency record, the request (`ACCEPTED`) and its first event.
    **Once that commit succeeds the request is durably accepted** and the API answers `202`. A failed or timed-out
    commit answers `503` and the client retries with the same key.
-3. The API then creates a Cloud Tasks task as a best-effort wake-up. If that fails, the reconciler recovers it.
+3. The API then creates a queue task (Cloud Tasks in the design, QStash in the free-tier run) as a best-effort wake-up. If that fails, the reconciler recovers it.
 4. The worker takes a lease in a Firestore transaction, runs the deterministic triage, and commits
    `COMPLETED` (or `FAILED`) fenced by the lease. States: `ACCEPTED → PROCESSING → COMPLETED | FAILED`.
 
@@ -180,7 +216,7 @@ demonstrated.
 - Cloud Tasks semantics assumed by the design (ADR-003/011/017) are **not verified** until the owner runs the cloud spike
   (checks C1–C9, **NOT RUN**). The design degrades to extra tasks, not to wrong state, if they are wrong.
 - Redis Lua scripts and adapters run against real Redis in CI only; the maintainers' Windows machine has no Redis.
-- Google sign-in has only been exercised through the Auth emulator, never against real Google OAuth.
+- Google sign-in was exercised against real Google once, from Firebase Hosting in the free-tier run (n=1); every other test uses the Auth emulator.
 - Load figures are local and emulator-based (see above). No cloud scalability is claimed.
 - Admin retry of failed requests is deliberately not enabled. There is no license file yet; licensing is awaiting the owner's decision.
 
@@ -192,7 +228,7 @@ Infrastructure scripts, API and worker Dockerfiles, guarded deploy/shutdown wrap
 tested offline or on emulators only ([infra/README.md](infra/README.md), [infra/CLOUD_VERIFICATION.md](infra/CLOUD_VERIFICATION.md)); every state-changing
 step needs explicit owner approval and is dry-run by default. Check readiness locally with `node scripts/preflight.mjs` (it never contacts Google Cloud unless the owner adds `--run`, which only reads).
 The step-by-step owner runbook is in [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md). The local emulator demo and a cloud deployment are different
-things: the former is what this repository demonstrates today, the latter is unverified (C1-C9, real Google OAuth, Cloud Run/Tasks behaviour, real-Redis load and k6 are NOT RUN; Upstash QStash and Redis were used only in the single free-tier run).
+things: the former is what this repository demonstrates today, the latter is unverified (C1-C9, Cloud Run/Tasks behaviour, real-Redis load and k6 are NOT RUN; real Google sign-in, Upstash QStash and Redis were used only in the single free-tier run).
 
 ## GitHub Actions verification
 

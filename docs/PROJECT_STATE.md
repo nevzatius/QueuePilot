@@ -56,4 +56,4 @@ T3 `.claude/agents/architecture-reviewer.md` is stale against ADR-017; T4 stale 
 ## Next step
 
 1. The B9-5 remainder (`count()` stuck counts, time-based reconcile throttle also for `/internal/reconcile`, `RESOURCE_EXHAUSTED` classification) stays open: it protects the Spark read budget and is a prerequisite before any feature that adds polling or reads (planned B11). 2. Owner: close the open B9-9 live checks, then shut down (runbook step 11) when the demo is no longer needed.
-3. Planned, not scheduled: ADR-020 (webhook demo job) and TASKS "B10-B13".
+3. Planned, not scheduled: ADR-020 (webhook demo job) and TASKS "B10-B13". B13a README first screen, `docs/USE_CASES.md` and the live `docs/DEMO.md` script are in the docs PR "README refresh, use cases and live demo script"; B13b is open.
