@@ -353,7 +353,7 @@ docker inspect --format "{{index .RepoDigests 0}}" europe-west1-docker.pkg.dev/A
    no `.env`, key or credential is copied (`.dockerignore`). CI (`scripts/docker-smoke.mjs`, synthetic production-shaped settings from `scripts/lib/smoke-env.mjs`) proves only:
    the build succeeds; `/health` answers with `QP_ENV=production` settings; the worker rejects unauthenticated `/internal/*` calls with 403; quota fail-open, `QP_FAULT_*`,
    emulator overrides and demo projects each stop startup; `/app` holds only `package.json`, `node_modules` and `dist/server.js(.map)` with no workspace sources or `re2`;
-   files are read-only; the user is non-root; SIGTERM exits 0. The images were never run against real Firestore, Redis or Cloud Tasks.
+   files are read-only; the user is non-root; SIGTERM exits 0. The images ran against real Firestore and Upstash Redis only in the single free-tier live run (B9-9, n=1, Render); they were never run against real Cloud Tasks.
 2. Deploy, worker first then API, with explicit service identities **[repo]**:
 
 ```powershell

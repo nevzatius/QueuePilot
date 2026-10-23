@@ -157,8 +157,8 @@ Yöntem ve senaryo tablosu: [tests/load/README.md](tests/load/README.md). Kayded
 
 Bu sayılar **production benchmark'ı değildir**. Yük üreteci test edilen sistemle aynı makineyi paylaşır; Firestore emülatördür; uçtan uca
 tamamlanma süreleri saniyede 20 dispatch ile hız sınırlı süreç içi yerel kuyrukla sınırlıdır; gerçek Redis ile Redis-açık varyantı
-**çalıştırılmadı** (yalnızca Redis kapalı ve Redis açık ama erişilemez varyantları ölçüldü); k6 çalıştırılmadı; Cloud Run, Cloud Tasks ve
-Upstash hiç ölçülmedi. "10.000 RPS" gibi bir verim iddia edilmez ve gösterilmemiştir.
+**çalıştırılmadı** (yalnızca Redis kapalı ve Redis açık ama erişilemez varyantları ölçüldü); k6 çalıştırılmadı; Upstash QStash ve Redis tek bir canlı ücretsiz-katman çalıştırmasında (n=1) kullanıldı ancak Redis yük ölçümü yoktur; Cloud Run ve
+Cloud Tasks hiç ölçülmedi. "10.000 RPS" gibi bir verim iddia edilmez ve gösterilmemiştir.
 
 ## Bilinen sınırlamalar
 
@@ -179,8 +179,7 @@ Altyapı betikleri, API ve worker Dockerfile'ları, korumalı deploy/shutdown sa
 yazılmış ve yalnızca çevrimdışı veya emülatörde test edilmiştir ([infra/README.md](infra/README.md), [infra/CLOUD_VERIFICATION.md](infra/CLOUD_VERIFICATION.md));
 durum değiştiren her adım sahibin açık onayını gerektirir ve varsayılan olarak dry-run'dır. Yerel hazırlık kontrolü: `node scripts/preflight.mjs`
 (sahip `--run` eklemedikçe Google Cloud'a bağlanmaz; `--run` yalnızca okur). Adım adım sahip rehberi: [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md). Yerel emülatör demosu ile bulut
-dağıtımı farklı şeylerdir: bugün gösterilen yalnızca ilkidir; bulut tarafı doğrulanmamıştır (C1-C9, gerçek Google OAuth, Cloud Run/Tasks davranışı ve
-Upstash/TLS ÇALIŞTIRILMADI).
+dağıtımı farklı şeylerdir: bugün gösterilen yalnızca ilkidir; bulut tarafı doğrulanmamıştır (C1-C9, gerçek Google OAuth, Cloud Run/Tasks davranışı, gerçek Redis yükü ve k6 ÇALIŞTIRILMADI; Upstash QStash ve Redis yalnızca tek bir ücretsiz-katman çalıştırmasında kullanıldı).
 
 ## GitHub Actions doğrulaması
 
