@@ -56,4 +56,4 @@ T3 `.claude/agents/architecture-reviewer.md` is stale against ADR-017; T4 stale 
 
 ## Next step
 
-1. Review and merge the B9-7 review-fix PR. 2. Decide whether to finish the B9-5 remainder before the live run (recommended: it protects the Spark read budget). 3. Owner: close the open B9-9 live checks, then shut down (runbook step 11) when the demo is no longer needed.
+1. Merge PR #11. 2. The B9-5 remainder (`count()` stuck counts, time-based reconcile throttle also for `/internal/reconcile`, `RESOURCE_EXHAUSTED` classification) stays open: it protects the Spark read budget and is a prerequisite before any feature that adds polling or reads (planned B11). 3. Owner: close the open B9-9 live checks, then shut down (runbook step 11) when the demo is no longer needed.

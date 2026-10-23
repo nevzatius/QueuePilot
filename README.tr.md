@@ -162,7 +162,7 @@ Upstash hiç ölçülmedi. "10.000 RPS" gibi bir verim iddia edilmez ve gösteri
 
 ## Bilinen sınırlamalar
 
-- **Production'a hazır değildir.** Bulut dağıtımı yok, güvenlik sertifikasyonu veya bağımsız denetim yok.
+- **Production'a hazır değildir.** Google Cloud dağıtımı yok; tek bir geçici ücretsiz katman çalıştırması vardır (rakamlar birer çalıştırmadır). Güvenlik sertifikasyonu veya bağımsız denetim yok.
 - Tasarımın varsaydığı Cloud Tasks semantiği (ADR-003/011/017), sahibin bulut spike'ını (C1–C9 kontrolleri, **ÇALIŞTIRILMADI**)
   çalıştırmasına kadar **doğrulanmamıştır**. Varsayımlar yanlışsa tasarım yanlış duruma değil, fazladan görevlere dönüşür.
 - Redis Lua betikleri ve adaptörleri gerçek Redis'e karşı yalnızca CI'da çalışır; geliştirici Windows makinesinde Redis yoktur.

@@ -176,7 +176,7 @@ demonstrated.
 
 ## Known limitations
 
-- **Not production-ready.** No cloud deployment, no security certification or external audit.
+- **Not production-ready.** No Google Cloud deployment; one temporary free-tier run exists (figures are one run each). No security certification or external audit.
 - Cloud Tasks semantics assumed by the design (ADR-003/011/017) are **not verified** until the owner runs the cloud spike
   (checks C1–C9, **NOT RUN**). The design degrades to extra tasks, not to wrong state, if they are wrong.
 - Redis Lua scripts and adapters run against real Redis in CI only; the maintainers' Windows machine has no Redis.
