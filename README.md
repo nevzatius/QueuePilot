@@ -7,8 +7,9 @@ Clients submit requests in bursts; the API persists each one before answering `2
 independent worker processes it later, with retries, leases and a reconciler that recovers lost work.
 
 **Status:** the local MVP (API, worker, reconciler, Redis limits, React dashboard) works end to end on
-Firebase emulators and passes CI. **Nothing is deployed to Google Cloud**, and none of the cloud
-behaviour has been verified. See [Known limitations](#known-limitations) and [Cloud deployment status](#cloud-deployment-status).
+Firebase emulators and passes CI. **Nothing is deployed to Google Cloud**; the Google Cloud checks (C1-C9) are
+NOT RUN. A first live deployment on free tiers (Render free, Firebase Spark, Upstash) was run once on 2026-10-22/23 and is
+temporary; its cloud figures are one run each. See [Known limitations](#known-limitations) and [Cloud deployment status](#cloud-deployment-status).
 
 ## Why it exists
 
@@ -185,7 +186,8 @@ demonstrated.
 
 ## Cloud deployment status
 
-**Not started.** No Google Cloud project, billing, Cloud Run service, queue, Scheduler job or Upstash database exists.
+**Google Cloud path: not started.** No Google Cloud project, billing, Cloud Run service, queue or Scheduler job exists (C1-C9 NOT RUN).
+A first live deployment on free tiers (Render free, Firebase Spark, Upstash) was run once on 2026-10-22/23 and is temporary; its figures are one run each (see [docs/TASKS.md](docs/TASKS.md), "B9-9 live results").
 Infrastructure scripts, API and worker Dockerfiles, guarded deploy/shutdown wrappers, an admin-grant script and a demo seed script are written and
 tested offline or on emulators only ([infra/README.md](infra/README.md), [infra/CLOUD_VERIFICATION.md](infra/CLOUD_VERIFICATION.md)); every state-changing
 step needs explicit owner approval and is dry-run by default. Check readiness locally with `node scripts/preflight.mjs` (it never contacts Google Cloud unless the owner adds `--run`, which only reads).
