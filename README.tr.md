@@ -17,9 +17,10 @@ Upstash) yapılmıştır. Google Cloud yolu (Cloud Run, Cloud Tasks, Cloud Sched
 
 - **Bu çalıştırmada canlı görülenler (her biri n=1):** Firebase Hosting'den Google ile giriş; tarayıcıdan farklı origin'e çağrı (CORS); bir
   isteğin kabul edilmesi, kuyruğa girmesi, worker tarafından işlenmesi ve Firestore'da `COMPLETED` yazılması; worker'ın dahili
-  uç noktasına imzasız çağrının `401` dönmesi; art arda 15 saatlik scheduler tick'inin teslim edilmesi; soğuk başlangıçlar (API ile
-  kullanılabilir panele yaklaşık 30 s; uyuyan worker'da *Accepted* ile *Processing started* arası yaklaşık 25 s; işlemin kendisi yaklaşık 1 s).
-- **Otomatik testlerle kapsananlar, canlı gösterilmeyenler:** idempotent tekrar (replay), mükerrer teslimat bastırma, kira devralma
+  uç noktasına imzasız çağrının `401` dönmesi; art arda 15 saatlik scheduler tick'inin teslim edilmesi; idempotent tekrar (`202` + `Idempotent-Replayed: true`) ve
+  `409 IDEMPOTENCY_KEY_REUSED` canlıda API düzeyinde Postman ile görüldü, tek koşu (arayüz anahtarı göstermez); soğuk başlangıçlar (worker için yaklaşık 25-35 s,
+  API için yaklaşık 25 s, ikisi de soğukken yaklaşık bir dakika; n=1/2, yaklaşık; işlemin kendisi yaklaşık 1 s).
+- **Otomatik testlerle kapsananlar, canlı gösterilmeyenler:** mükerrer teslimat bastırma, kira devralma
   (lease takeover), yeniden deneme bütçesi ve reconciler (modellenmiş kuyrukta domain ve worker testleri T1-T13, emülatör entegrasyon
   setleri; replay, çakışma ve mükerrer teslimat için ayrıca yerel emülatör e2e betiği).
 - **Yapılmadı:** webhook teslimatı, kaos / hata enjeksiyonu ve herkese açık vitrin (yalnızca planlı, [ADR-020](docs/DECISIONS.md));

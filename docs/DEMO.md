@@ -15,8 +15,9 @@ makinesinde bir notta tutun, depoya yazmayın.
 | Hosting'den Google ile giriş, CORS çağrısı, kabul → kuyruk → worker → Firestore'da `COMPLETED` | **Canlı görüldü, her biri bir koşu (n=1)** | [TASKS.md](TASKS.md) "B9-9 live results" madde 4, 5 |
 | Worker'ın dahili uç noktasına imzasız çağrı `401` | Canlı görüldü (n=1) | B9-9 madde 5 |
 | 15 ardışık saatlik scheduler tick'i teslim edildi | Canlı görüldü (n=1) | B9-9 madde 6 |
-| Soğuk başlangıç: API ile kullanılabilir panele ≈ 30 s (el kronometresi); uyuyan worker'da *Accepted* → *Processing started* ≈ 25 s; işlem ≈ 1 s | Ölçüldü, tek koşu, yaklaşık | B9-9 madde 7 |
-| Idempotency, lease, retry, reconciler | Var; **testlerle** ve yerel emülatör e2e ile kapsanıyor, **canlıda gösterilmedi** | Aşağıda (c) |
+| Soğuk başlangıç: worker için ≈ 25-35 s, API için ≈ 25 s, ikisi de soğukken ≈ 1 dakika; işlem ≈ 1 s | Ölçüldü, n=1/2, yaklaşık | B9-9 madde 7, TASKS "Postman API checks" |
+| Idempotent tekrar (`202` + `Idempotent-Replayed: true`) ve `409 IDEMPOTENCY_KEY_REUSED` | Canlıda API düzeyinde Postman ile görüldü, tek koşu (arayüz anahtarı göstermez) | TASKS "Postman API checks" |
+| Lease, retry, reconciler | Var; **testlerle** ve yerel emülatör e2e ile kapsanıyor, **canlıda gösterilmedi** | Aşağıda (c) |
 | Webhook teslimatı, kaos / hata enjeksiyonu, herkese açık vitrin | **Yapılmadı**, yalnızca planlı | [ADR-020](DECISIONS.md), TASKS B10-B13 |
 | Exactly-once | **Hiç iddia edilmedi** | [ARCHITECTURE §7](ARCHITECTURE.md) "Non-claims" |
 | Bulut ölçeklenebilirliği, production-hazırlık | **İddia edilmez** | README "Known limitations" |
@@ -32,7 +33,7 @@ makinesinde bir notta tutun, depoya yazmayın.
 **T-15 dk:**
 
 1. `<HOSTING_URL>` adresini açın. Arayüz "The service is waking up, this can take up to a minute." bildirimini gösterebilir; panel
-   hazır olana kadar bekleyin (n=1 ölçüm: yaklaşık 30 s).
+   hazır olana kadar bekleyin (API için yaklaşık 25 s, n=1/2, yaklaşık).
 2. **Sahip hesabıyla** Google ile giriş yapın. Kayıt kapalıdır (`openSignup=false`): başka bir hesap "Sign-up is closed for this workspace"
    ile reddedilir. Yönetici rolünü bu hesaba sahip betikle vermiştir; üyelik Firestore'dadır.
 3. Bir talep gönderin (New request). Bu, hem API'yi hem de QStash üzerinden worker'ı uyandırır.
@@ -77,7 +78,7 @@ neden kuyruğa doğruluk görevi yüklemediğini gösterir.
 
 - **Dramatik mod (uyuyan worker):** T-3 ısınmasını yapmayın. Son gönderimden bu yana en az 15 dakika geçmiş olmalı. Worker saatlik
   scheduler tick'iyle de uyanır (bu çalıştırmada tick'ler saat başında görüldü); bu yüzden saat başından sonraki ilk 15 dakikada sunum yapmayın,
-  worker uyanık olabilir (çıkarım). Beklenti: *Accepted* ile *Processing started* arası **yaklaşık 25 s** (n=1). Çıplak uyuyan servis
+  worker uyanık olabilir (çıkarım). Beklenti: *Accepted* ile *Processing started* arası **yaklaşık 25-35 s** (n=1/2, yaklaşık). Çıplak uyuyan servis
   yanıtı daha önceki spike'ta 8-14 s ölçüldü; Render belgeleri 50 s'ye kadar diyor (ADR-019), bu yüzden süreyi garanti etmeyin.
 - **Güvenli mod (ısınmış worker):** T-3 ısınmasını yapın. Aralık birkaç saniyeye iner; soğuk başlangıç anlatısını sözlü yapın ve
   ekran görüntüsünü (dramatik modda alınmış zaman çizelgesi) gösterin.
@@ -90,7 +91,7 @@ aynı anahtarı gönderir ve arayüz metni bunu söyler ("Retrying keeps the sam
 anahtar sıfırlanır. **Bu nedenle sunumda canlı bir "aynı anahtarla ikinci gönderim" gösterilemez; sözlü anlatın ve testlere işaret edin:**
 
 - Aynı anahtar + aynı gövde: `202`, aynı `requestId`, `Idempotent-Replayed: true`; aynı anahtar + farklı gövde: `409 IDEMPOTENCY_KEY_REUSED` ([ARCHITECTURE §9](ARCHITECTURE.md)).
-- Kanıt: domain testleri (`packages/domain/test`), anahtar yöneticisi testi (`apps/web/src/lib/idempotency.test.ts`) ve yerel e2e betiği (`docs/verification/e2e-local.mjs`: replay ve `409` kontrolleri). Canlıda denenmedi.
+- Kanıt: domain testleri (`packages/domain/test`), anahtar yöneticisi testi (`apps/web/src/lib/idempotency.test.ts`) ve yerel e2e betiği (`docs/verification/e2e-local.mjs`: replay ve `409` kontrolleri). Canlıda API düzeyinde Postman ile görüldü, tek koşu; arayüz anahtarı göstermez.
 
 ### Sınırlar slaytı (yüksek sesle söyleyin)
 
