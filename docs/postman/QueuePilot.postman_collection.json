@@ -1,0 +1,1155 @@
+{
+  "info": {
+    "_postman_id": "144a9a55-2014-4d77-9dd7-d11960a1a8ff",
+    "name": "QueuePilot API tests",
+    "description": "Debug-friendly tests for the QueuePilot API and worker gate. See README-postman.md.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "const cid = pm.response.headers.get('x-correlation-id') || '-';",
+          "const ms = pm.response.responseTime;",
+          "console.log('[' + pm.info.requestName + '] ' + pm.request.method + ' -> ' + pm.response.code + ' in ' + ms + ' ms, correlation=' + cid);",
+          "if (ms > 8000) console.warn('slow answer: probably a Render cold start (API about 30 s, worker about 25 s)');",
+          "if (pm.response.code >= 400 && pm.response.headers.get('content-type') && pm.response.headers.get('content-type').includes('problem+json')) {",
+          "  const p = pm.response.json(); console.log('  problem: code=' + p.code + ' errors=' + JSON.stringify(p.errors || []));",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "requestId",
+      "value": ""
+    },
+    {
+      "key": "idemKey",
+      "value": ""
+    },
+    {
+      "key": "pollCount",
+      "value": ""
+    },
+    {
+      "key": "pollStart",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Public, error format, CORS (no token)",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/health",
+            "description": "Liveness. First call after idle can take 30-60 s (Render free cold start)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('body is {status:ok}', () => pm.expect(pm.response.json()).to.eql({status: 'ok'}));",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /ready (Firestore check)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/ready",
+            "description": "Readiness: the API asks Firestore if it is reachable with the service-account key."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('status ok', () => pm.expect(pm.response.json().status).to.eql('ok'));",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET unknown path without token (401 or 404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/does-not-exist",
+            "description": "Tells you whether the API hides which paths exist from unauthenticated callers."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 or 404 (the auth hook may answer before the not-found handler)', () => pm.expect([401, 404]).to.include(pm.response.code));",
+                  "pm.test('problem+json body', () => pm.expect(pm.response.headers.get('content-type')).to.include('application/problem+json'));",
+                  "console.log('unknown path answered ' + pm.response.code + ' (' + pm.response.json().code + ')');",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/v1/me without token -> 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/v1/me",
+            "description": "Auth hook runs for every non-public route."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('content-type is application/problem+json', () => pm.expect(pm.response.headers.get('content-type')).to.include('application/problem+json'));",
+                  "pm.test('code is UNAUTHENTICATED', () => pm.expect(pm.response.json().code).to.eql('UNAUTHENTICATED'));",
+                  "pm.test('correlationId in body equals x-correlation-id header', () => pm.expect(pm.response.json().correlationId).to.eql(pm.response.headers.get('x-correlation-id')));",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/v1/me with garbage token -> 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer not-a-real-token"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/me",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('content-type is application/problem+json', () => pm.expect(pm.response.headers.get('content-type')).to.include('application/problem+json'));",
+                  "pm.test('code is UNAUTHENTICATED', () => pm.expect(pm.response.json().code).to.eql('UNAUTHENTICATED'));",
+                  "pm.test('correlationId in body equals x-correlation-id header', () => pm.expect(pm.response.json().correlationId).to.eql(pm.response.headers.get('x-correlation-id')));",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "OPTIONS preflight from the Hosting origin",
+          "request": {
+            "method": "OPTIONS",
+            "header": [
+              {
+                "key": "Origin",
+                "value": "{{webOrigin}}"
+              },
+              {
+                "key": "Access-Control-Request-Method",
+                "value": "POST"
+              },
+              {
+                "key": "Access-Control-Request-Headers",
+                "value": "authorization,content-type,idempotency-key"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/requests",
+            "description": "Same preflight the browser sends. Answered before authentication."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));",
+                  "pm.test('allow-origin equals the origin', () => pm.expect(pm.response.headers.get('access-control-allow-origin')).to.eql(pm.variables.get('webOrigin')));",
+                  "pm.test('allow-headers lists Idempotency-Key', () => pm.expect(pm.response.headers.get('access-control-allow-headers')).to.include('Idempotency-Key'));",
+                  "pm.test('credentials are never allowed', () => pm.expect(pm.response.headers.has('access-control-allow-credentials')).to.be.false);",
+                  "pm.test('Vary: Origin', () => pm.expect(pm.response.headers.get('vary')).to.include('Origin'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "OPTIONS preflight from a foreign origin",
+          "request": {
+            "method": "OPTIONS",
+            "header": [
+              {
+                "key": "Origin",
+                "value": "https://evil.example"
+              },
+              {
+                "key": "Access-Control-Request-Method",
+                "value": "POST"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/requests",
+            "description": "Closes the live check 'a request from another origin must show no ACAO' (TASKS B9-9)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('no Access-Control-Allow-Origin for a foreign origin', () => pm.expect(pm.response.headers.has('access-control-allow-origin')).to.be.false);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Identity (needs idToken)",
+      "item": [
+        {
+          "name": "GET /api/v1/me",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/me",
+            "description": "Identity comes from the verified token; the membership (tenant and role) is read from Firestore."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get('idToken')) {",
+                  "  throw new Error('idToken is empty. Copy the Bearer token from the browser (README step 3) into the environment variable idToken.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('uid present', () => pm.expect(b.uid).to.be.a('string').and.not.empty);",
+                  "pm.test('has a membership (grant-role was run)', () => pm.expect(b.membership).to.be.an('object'));",
+                  "console.log('role=' + (b.membership && b.membership.role) + ' tenant=' + (b.membership && b.membership.tenantId));",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /session/bootstrap (existing member)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/session/bootstrap",
+            "description": "Idempotent. Limits: 10/min per user, 30/min per IP.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get('idToken')) {",
+                  "  throw new Error('idToken is empty. Copy the Bearer token from the browser (README step 3) into the environment variable idToken.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('created is false (idempotent)', () => pm.expect(pm.response.json().created).to.eql(false));",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET unknown path with token -> 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/does-not-exist",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get('idToken')) {",
+                  "  throw new Error('idToken is empty. Copy the Bearer token from the browser (README step 3) into the environment variable idToken.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('content-type is application/problem+json', () => pm.expect(pm.response.headers.get('content-type')).to.include('application/problem+json'));",
+                  "pm.test('code is NOT_FOUND', () => pm.expect(pm.response.json().code).to.eql('NOT_FOUND'));",
+                  "pm.test('correlationId in body equals x-correlation-id header', () => pm.expect(pm.response.json().correlationId).to.eql(pm.response.headers.get('x-correlation-id')));",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /session/bootstrap with {role:admin} -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/session/bootstrap",
+            "description": "ADR-008: a client can never choose its role; the field is rejected, not ignored.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"role\":\"admin\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get('idToken')) {",
+                  "  throw new Error('idToken is empty. Copy the Bearer token from the browser (README step 3) into the environment variable idToken.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('content-type is application/problem+json', () => pm.expect(pm.response.headers.get('content-type')).to.include('application/problem+json'));",
+                  "pm.test('code is VALIDATION_FAILED', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_FAILED'));",
+                  "pm.test('correlationId in body equals x-correlation-id header', () => pm.expect(pm.response.json().correlationId).to.eql(pm.response.headers.get('x-correlation-id')));",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Requests lifecycle (needs idToken; step 2.1 uses 1 of your 30 daily submissions)",
+      "item": [
+        {
+          "name": "2.1 POST /requests (new)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/requests",
+            "description": "202 means committed in Firestore, not processed. The queue wake-up is sent after the commit.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"support_ticket\",\n  \"title\": \"Postman test request\",\n  \"description\": \"Created by the Postman collection\",\n  \"priority\": \"high\",\n  \"attributes\": {\n    \"safetyRisk\": false\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get('idToken')) {",
+                  "  throw new Error('idToken is empty. Copy the Bearer token from the browser (README step 3) into the environment variable idToken.');",
+                  "}",
+                  "pm.collectionVariables.set('idemKey', 'pm-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.unset('pollCount'); pm.collectionVariables.unset('pollStart');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "const b = pm.response.json();",
+                  "pm.test('requestId is a uuid', () => pm.expect(b.requestId).to.match(/^[0-9a-f-]{36}$/));",
+                  "pm.test('Location header equals body.location', () => pm.expect(pm.response.headers.get('location')).to.eql(b.location));",
+                  "pm.test('first creation has no Idempotent-Replayed header', () => pm.expect(pm.response.headers.has('idempotent-replayed')).to.be.false);",
+                  "pm.collectionVariables.set('requestId', b.requestId);",
+                  "console.log('requestId=' + b.requestId + ' idemKey=' + pm.collectionVariables.get('idemKey'));",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.2 POST same key + same body -> replay",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/requests",
+            "description": "Run right after 2.1. No second request is created.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"support_ticket\",\n  \"title\": \"Postman test request\",\n  \"description\": \"Created by the Postman collection\",\n  \"priority\": \"high\",\n  \"attributes\": {\n    \"safetyRisk\": false\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get('idToken')) {",
+                  "  throw new Error('idToken is empty. Copy the Bearer token from the browser (README step 3) into the environment variable idToken.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202', () => pm.response.to.have.status(202));",
+                  "pm.test('Idempotent-Replayed: true', () => pm.expect(pm.response.headers.get('idempotent-replayed')).to.eql('true'));",
+                  "pm.test('same requestId as 2.1', () => pm.expect(pm.response.json().requestId).to.eql(pm.collectionVariables.get('requestId')));",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.3 POST same key + different body -> 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/requests",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"support_ticket\",\n  \"title\": \"Postman test request (changed)\",\n  \"description\": \"Created by the Postman collection\",\n  \"priority\": \"high\",\n  \"attributes\": {\n    \"safetyRisk\": false\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get('idToken')) {",
+                  "  throw new Error('idToken is empty. Copy the Bearer token from the browser (README step 3) into the environment variable idToken.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));",
+                  "pm.test('content-type is application/problem+json', () => pm.expect(pm.response.headers.get('content-type')).to.include('application/problem+json'));",
+                  "pm.test('code is IDEMPOTENCY_KEY_REUSED', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REUSED'));",
+                  "pm.test('correlationId in body equals x-correlation-id header', () => pm.expect(pm.response.json().correlationId).to.eql(pm.response.headers.get('x-correlation-id')));",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.4 POST without Idempotency-Key -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/requests",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"support_ticket\",\n  \"title\": \"Postman test request\",\n  \"description\": \"Created by the Postman collection\",\n  \"priority\": \"high\",\n  \"attributes\": {\n    \"safetyRisk\": false\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get('idToken')) {",
+                  "  throw new Error('idToken is empty. Copy the Bearer token from the browser (README step 3) into the environment variable idToken.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('content-type is application/problem+json', () => pm.expect(pm.response.headers.get('content-type')).to.include('application/problem+json'));",
+                  "pm.test('code is VALIDATION_FAILED', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_FAILED'));",
+                  "pm.test('correlationId in body equals x-correlation-id header', () => pm.expect(pm.response.json().correlationId).to.eql(pm.response.headers.get('x-correlation-id')));",
+                  "const errs = pm.response.json().errors;",
+                  "if (!Array.isArray(errs) || errs.length === 0) console.warn('KNOWN GAP: VALIDATION_FAILED carries no errors[] (the contract allows it, the API never fills it), so the client cannot tell which field failed');",
+                  "else pm.test('errors[] points at the header', () => pm.expect(JSON.stringify(errs)).to.include('idempotency-key'));",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.5 POST with unknown field tenantId -> 400 (strict body)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "pm-strict-body-0001"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/requests",
+            "description": "The tenant always comes from the membership; a client can not send it.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"general\",\n  \"title\": \"Strict body test\",\n  \"tenantId\": \"someone-else\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get('idToken')) {",
+                  "  throw new Error('idToken is empty. Copy the Bearer token from the browser (README step 3) into the environment variable idToken.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('content-type is application/problem+json', () => pm.expect(pm.response.headers.get('content-type')).to.include('application/problem+json'));",
+                  "pm.test('code is VALIDATION_FAILED', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_FAILED'));",
+                  "pm.test('correlationId in body equals x-correlation-id header', () => pm.expect(pm.response.json().correlationId).to.eql(pm.response.headers.get('x-correlation-id')));",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.6 GET /requests/{id} (run repeatedly until terminal)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/requests/{{requestId}}",
+            "description": "The worker lease, attempt count and timeline are visible here. Look at the Postman Console."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get('idToken')) {",
+                  "  throw new Error('idToken is empty. Copy the Bearer token from the browser (README step 3) into the environment variable idToken.');",
+                  "}",
+                  "// wait 3 s before every repeat poll, so the time budget below is real time (a cold worker needs 25-35 s)",
+                  "if (Number(pm.collectionVariables.get('pollCount') || 0) > 0) { setTimeout(() => {}, 3000); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "const n = Number(pm.collectionVariables.get('pollCount') || 0) + 1;",
+                  "const t0 = Number(pm.collectionVariables.get('pollStart') || Date.now());",
+                  "pm.collectionVariables.set('pollStart', t0);",
+                  "const waited = Math.round((Date.now() - t0) / 1000);",
+                  "pm.collectionVariables.set('pollCount', n);",
+                  "console.log('poll ' + n + ' (' + waited + ' s): status=' + b.status + ' attempts=' + b.attempts + '/' + b.maxAttempts + ' events=' + b.events.map(e => e.type + '@' + e.actor).join(' > '));",
+                  "const terminal = ['COMPLETED', 'FAILED'].includes(b.status);",
+                  "if (!terminal && waited < 150) {",
+                  "  pm.execution.setNextRequest(pm.info.requestName);  // repeats every ~3 s, for at most 150 s",
+                  "} else {",
+                  "  pm.collectionVariables.unset('pollCount'); pm.collectionVariables.unset('pollStart');",
+                  "  pm.test('reached COMPLETED', () => pm.expect(b.status).to.eql('COMPLETED'));",
+                  "  pm.test('triage result present', () => pm.expect(b.result).to.have.property('lane'));",
+                  "  pm.test('timeline starts with ACCEPTED (api) and ends with COMPLETED (worker)', () => {",
+                  "    pm.expect(b.events[0].type).to.eql('ACCEPTED'); pm.expect(b.events[0].actor).to.eql('api');",
+                  "    pm.expect(b.events[b.events.length - 1].type).to.eql('COMPLETED');",
+                  "  });",
+                  "  pm.test('no duplicate deliveries on a clean run', () => pm.expect(b.duplicateDeliveries).to.eql(0));",
+                  "  const t = b.events.map(e => new Date(e.at).getTime());",
+                  "  console.log('accepted -> processing started: ' + ((t[1] - t[0]) / 1000) + ' s (a cold worker took 25-35 s in earlier runs)');",
+                  "  console.log('processing started -> completed: ' + ((t[t.length - 1] - t[1]) / 1000) + ' s');",
+                  "}",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.7 GET /requests (mine) contains the new request",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/requests?limit=20",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get('idToken')) {",
+                  "  throw new Error('idToken is empty. Copy the Bearer token from the browser (README step 3) into the environment variable idToken.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('items is an array', () => pm.expect(b.items).to.be.an('array'));",
+                  "pm.test('nextCursor is null or a string', () => pm.expect(b.nextCursor === null || typeof b.nextCursor === 'string').to.be.true);",
+                  "pm.test('new request is on the first page (newest first)', () => pm.expect(b.items.map(i => i.requestId)).to.include(pm.collectionVariables.get('requestId')));",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.8 GET /requests?scope=tenant (admin only)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/requests?scope=tenant&limit=5",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get('idToken')) {",
+                  "  throw new Error('idToken is empty. Copy the Bearer token from the browser (README step 3) into the environment variable idToken.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 for an admin (403 FORBIDDEN for a member)', () => pm.response.to.have.status(200));",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.9 GET unknown requestId -> 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/requests/11111111-1111-4111-8111-111111111111",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get('idToken')) {",
+                  "  throw new Error('idToken is empty. Copy the Bearer token from the browser (README step 3) into the environment variable idToken.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('content-type is application/problem+json', () => pm.expect(pm.response.headers.get('content-type')).to.include('application/problem+json'));",
+                  "pm.test('code is NOT_FOUND', () => pm.expect(pm.response.json().code).to.eql('NOT_FOUND'));",
+                  "pm.test('correlationId in body equals x-correlation-id header', () => pm.expect(pm.response.json().correlationId).to.eql(pm.response.headers.get('x-correlation-id')));",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.10 GET malformed requestId -> 400",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/requests/not-a-uuid",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get('idToken')) {",
+                  "  throw new Error('idToken is empty. Copy the Bearer token from the browser (README step 3) into the environment variable idToken.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('content-type is application/problem+json', () => pm.expect(pm.response.headers.get('content-type')).to.include('application/problem+json'));",
+                  "pm.test('code is VALIDATION_FAILED', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_FAILED'));",
+                  "pm.test('correlationId in body equals x-correlation-id header', () => pm.expect(pm.response.json().correlationId).to.eql(pm.response.headers.get('x-correlation-id')));",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.11 GET /metrics",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/metrics",
+            "description": "Cached about 5 s on the server."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get('idToken')) {",
+                  "  throw new Error('idToken is empty. Copy the Bearer token from the browser (README step 3) into the environment variable idToken.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('counts has the four stored statuses', () => pm.expect(b.counts).to.have.all.keys('ACCEPTED', 'PROCESSING', 'COMPLETED', 'FAILED'));",
+                  "pm.test('source is redis, memory or firestore', () => pm.expect(['redis', 'memory', 'firestore']).to.include(b.source));",
+                  "console.log('metrics source=' + b.source + ' counts=' + JSON.stringify(b.counts) + ' stuck=' + b.stuck);",
+                  "pm.test('x-correlation-id header present', () => pm.expect(pm.response.headers.get('x-correlation-id')).to.be.a('string').and.not.empty);",
+                  "pm.test('cache-control is no-store', () => pm.expect(pm.response.headers.get('cache-control')).to.include('no-store'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Worker gate (no token; proves unsigned calls are rejected)",
+      "item": [
+        {
+          "name": "GET worker /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{workerUrl}}/health",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('status ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET worker /ready",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{workerUrl}}/ready",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('status ready', () => pm.expect(pm.response.json().status).to.eql('ready'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST worker /internal/reconcile without signature -> 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{workerUrl}}/internal/reconcile",
+            "description": "Only QStash (signed JWT) may call this. This request must NEVER return 200.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('constant body {code:UNAUTHENTICATED}', () => pm.expect(pm.response.json()).to.eql({code: 'UNAUTHENTICATED'}));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST worker /internal/tasks without signature -> 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{workerUrl}}/internal/tasks",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"requestId\": \"11111111-1111-4111-8111-111111111111\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST worker /internal/tasks with a fake Upstash-Signature -> 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Upstash-Signature",
+                "value": "aaaa.bbbb.cccc"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{workerUrl}}/internal/tasks",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('body leaks nothing about the reason', () => pm.expect(pm.response.json()).to.eql({code: 'UNAUTHENTICATED'}));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 # Project State
 
 Single writer: Claude Code (ADR-013). Keep this file under 60 lines.
-Last updated: 2026-10-23, by Claude Code (B9-7 and its review fixes merged as PR #8 and #9; B9-9 live results and scheduler ticks in PR #11 and #13; B9-9c stale claims).
+Last updated: 2026-10-23, by Claude Code (B9-7 and its review fixes merged as PR #8 and #9; B9-9 live results and scheduler ticks in PR #11 and #13; B9-9c stale claims; Postman API checks done 2026-10-26, see TASKS).
 
 ## Phase
 

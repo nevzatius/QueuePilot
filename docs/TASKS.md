@@ -253,6 +253,19 @@ Source: ADR-020. Every item carries the budget table of ADR-020 decision 8. Noth
 
 B9-9b/9c (stale README/DEMO/PROJECT_STATE claims) were fixed in PR #11 and PR #14.
 
+### Postman API checks (2026-10-26, n=1 each)
+
+- **Results (free tiers, one run each):** folder 0 (public, error format, CORS) 30/30; folder 3 (worker gate) 9/9; folder 1 21/21; folder 2 all green except step 2.4, whose old `errors[]` assumption is now a console warning "KNOWN GAP" (see finding below).
+- **Idempotency at API level:** replay (`202` + `Idempotent-Replayed: true`, same `requestId`) and `409 IDEMPOTENCY_KEY_REUSED` were seen live. The UI does not expose the Idempotency-Key, so this is API-level only.
+- **Cold-start measurements (n=1 or n=2, approximate, free tier):**
+  - API cold: `GET /health` 23.1 s then `/ready` 2.8 s (run 1); `POST /requests` 26.5 s as the first request (run 2). Warm requests afterwards 0.3-0.6 s.
+  - Worker cold: Accepted 14:51:06 -> Processing started 14:51:41 = 35 s; Processing started -> Completed 1 s (run 2, Postman; QStash log shows DELIVERED, duration 35 s, to `/internal/tasks`). Earlier UI run: about 25 s.
+  - Both cold: roughly 26 s API + 35 s worker = about 1 minute until COMPLETED.
+  - Warm path: 0.74 s + 0.68 s (about 1.4 s).
+  - Hourly QStash ticks: 24-29 s each (they wake the worker; it stays awake about 15 min).
+- **Finding (low severity, open follow-up, not fixed here):** `VALIDATION_FAILED` responses never fill `errors[]`. The contract in `packages/contracts/src/http.ts` allows it, but the API never populates it, so a client cannot tell which field failed.
+- **Process note (test design):** the first poll loop in step 2.6 was count-limited (25 polls) and ended before the cold worker woke; it is now time-based (3 s interval, up to 150 s). The request itself completed normally; no recovery path was involved.
+
 ## CCR log
 
 _(none)_  T1 row note: ADR-017 gives seq=2 after a lost API enqueue (the card text above still says seq=1).

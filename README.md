@@ -16,9 +16,10 @@ free-tier run is a single run (n=1). See [Known limitations](#known-limitations)
 
 - **Seen live in that run (n=1 each):** Google sign-in from Firebase Hosting; a browser call across origins (CORS); one request
   accepted, queued, processed by the worker and committed `COMPLETED` in Firestore; an unsigned call to the worker's internal
-  endpoint answered `401`; 15 consecutive hourly scheduler ticks delivered; cold starts (API about 30 s to a usable dashboard; a
-  sleeping worker about 25 s from *Accepted* to *Processing started*; processing itself about 1 s).
-- **Covered by automated tests, not demonstrated live:** idempotent replay, duplicate-delivery suppression, lease takeover, the retry
+  endpoint answered `401`; 15 consecutive hourly scheduler ticks delivered; idempotent replay (`202` with `Idempotent-Replayed: true`) and
+  `409 IDEMPOTENCY_KEY_REUSED` at API level with Postman, one run (the UI does not expose the key); cold starts (about 25-35 s for the
+  worker, about 25 s for the API, about a minute if both are cold; n=1/2, approximate; processing itself about 1 s).
+- **Covered by automated tests, not demonstrated live:** duplicate-delivery suppression, lease takeover, the retry
   budget and the reconciler (domain and worker tests T1-T13 on a modelled queue, the emulator integration suites, and the local
   emulator e2e script for replay, conflict and duplicate delivery).
 - **Not done:** webhook delivery, chaos or fault injection and a public showcase (only planned, [ADR-020](docs/DECISIONS.md)); any
