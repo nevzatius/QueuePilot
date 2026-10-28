@@ -3,7 +3,7 @@
 WP ID: B2.1 (targeted B2 infrastructure corrections)
 Branch: `codex/b2-cloud`
 Agent: Codex
-Worktree: `D:/Oyun/QueuePilot-worktrees/codex-b1-foundation`
+Worktree: `<worktrees-dir>/codex-b1-foundation`
 Review base: `5bd6cddaf5130ac8f7a76a973c06962885125754`
 Local main: `39cc4369753f027ce0dedab24180682e954d62bf` (already an ancestor; no remote fetch).
 Delivery SHA: obtain with `git log -1 --format=%H codex/b2-cloud`.

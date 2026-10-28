@@ -140,7 +140,7 @@ Söylenecek ve **söylenmeyecek** olanlar:
   günlük 1.000 QStash mesajı, Spark'ta günlük 50K okuma / 20K yazma (bunlar yayımlanmış platform sınırlarıdır, ölçülmedi; ADR-019). Yerel rakamlar bir dizüstü bilgisayardaki emülatör sonuçlarıdır, bulutta hiçbir yük ölçülmedi.
 - **Güvenlik?** Üyelik ve rol Firestore'da (ADR-008); CORS izin listesi (canlıda Hosting origin'inden çağrı çalıştı; yabancı origin'den istek ayrıca doğrulanmadı); worker'da QStash imza doğrulaması
   (imzasız çağrı `401`; gerçek anahtarlarla başarılı iş çıkarımla doğrulandı, JWT alanları incelenmedi); Redis yokken kotalar kapalı-başarısız (`503 QUOTA_UNAVAILABLE`, ADR-009). Harici denetim yoktur.
-- **Neden Render / ücretsiz katman?** Sahibin faturalandırma hesabı / kartı yok; Google Cloud yolu (Cloud Run, Cloud Tasks, Cloud Scheduler) faturalandırma gerektirir ([ADR-019](DECISIONS.md)).
+- **Neden Render / ücretsiz katman?** Proje faturalandırma hesabı olmadan çalışır; Google Cloud yolu (Cloud Run, Cloud Tasks, Cloud Scheduler) faturalandırma gerektirir ([ADR-019](DECISIONS.md)).
   Cloud Tasks adaptörü yapılandırmayla seçilebilir kalır ama canlıda doğrulanmadı.
 - **Sırada ne var?** ADR-020'de **planlı** iş: yerleşik alıcıya webhook teslimatı, zaman çizelgesi zenginleştirme, yönetici-yalnız kaos denemesi ve statik kayıtlı vitrin. **Hiçbiri başlamadı**;
   zaman çizelgesi zenginleştirme (B11) için önce Firestore okuma bütçesi işi (B9-5 kalanı) gerekir.

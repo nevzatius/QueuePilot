@@ -11,7 +11,7 @@
 #
 # Circularity (document: DEPLOYMENT_RUNBOOK, step "Set the two URLs"): the API publishes tasks to the worker and the
 # worker checks that the QStash JWT `sub` equals QP_WORKER_URL + path, so BOTH services need the worker's public
-# origin, which Render only reveals after the first deploy. Enter the expected https://queuepilot-worker.onrender.com
+# origin, which Render only reveals after the first deploy. Enter the expected https://<your-worker>.onrender.com
 # at the prompt, compare it with the real URL in the dashboard, and correct both services if they differ.
 services:
   - type: web
