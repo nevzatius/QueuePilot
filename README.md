@@ -170,7 +170,7 @@ commands and environment for a fully local pair (local queue pump, local worker 
 | Command | What it runs | Needs |
 |---|---|---|
 | `pnpm lint` / `pnpm typecheck` / `pnpm build` | ESLint (incl. dependency boundaries), TypeScript, bundles | – |
-| `pnpm test` | Node unit tests (Vitest), web jsdom tests, offline infrastructure and owner-script tests | – |
+| `pnpm test` | Node unit tests (Vitest), web jsdom tests, offline infrastructure and maintainer-script tests | – |
 | `pnpm test:integration` | Starts Auth + Firestore emulators and runs API/worker integration, web→API smoke, worker startup smoke, **real-Redis suites** | Java 21, Redis on `REDIS_URL` |
 
 Real-Redis tests are `tests/integration/redis.test.ts` (Lua scripts), `tests/integration/redis-adapters.test.ts`
@@ -214,12 +214,17 @@ demonstrated.
 ## Known limitations
 
 - **Not production-ready.** No Google Cloud deployment; one temporary free-tier run exists (figures are one run each). No security certification or external audit.
-- Cloud Tasks semantics assumed by the design (ADR-003/011/017) are **not verified** until the owner runs the cloud spike
+- Cloud Tasks semantics assumed by the design (ADR-003/011/017) are **not verified** until the maintainer runs the cloud spike
   (checks C1–C9, **NOT RUN**). The design degrades to extra tasks, not to wrong state, if they are wrong.
 - Redis Lua scripts and adapters run against real Redis in CI only; the maintainers' Windows machine has no Redis.
 - Google sign-in was exercised against real Google once, from Firebase Hosting in the free-tier run (n=1); every other test uses the Auth emulator.
 - Load figures are local and emulator-based (see above). No cloud scalability is claimed.
-- Admin retry of failed requests is deliberately not enabled. There is no license file yet; licensing is awaiting the owner's decision.
+- Admin retry of failed requests is deliberately not enabled.
+- Released under the MIT license, see [LICENSE](LICENSE).
+
+## Not a hosted service
+
+The free-tier deployment is not publicly available, sign-up is closed and no support is offered. `docs/DEMO.md` and `docs/USE_CASES.md` are written in Turkish.
 
 ## Cloud deployment status
 
@@ -227,8 +232,8 @@ demonstrated.
 A first live deployment on free tiers (Render free, Firebase Spark, Upstash) was run once on 2026-10-22/23 and is temporary; its figures are one run each (see [docs/TASKS.md](docs/TASKS.md), "B9-9 live results").
 Infrastructure scripts, API and worker Dockerfiles, guarded deploy/shutdown wrappers, an admin-grant script and a demo seed script are written and
 tested offline or on emulators only ([infra/README.md](infra/README.md), [infra/CLOUD_VERIFICATION.md](infra/CLOUD_VERIFICATION.md)); every state-changing
-step needs explicit owner approval and is dry-run by default. Check readiness locally with `node scripts/preflight.mjs` (it never contacts Google Cloud unless the owner adds `--run`, which only reads).
-The step-by-step owner runbook is in [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md). The local emulator demo and a cloud deployment are different
+step needs explicit maintainer approval and is dry-run by default. Check readiness locally with `node scripts/preflight.mjs` (it never contacts Google Cloud unless the maintainer adds `--run`, which only reads).
+The step-by-step maintainer runbook is in [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md). The local emulator demo and a cloud deployment are different
 things: the former is what this repository demonstrates today, the latter is unverified (C1-C9, Cloud Run/Tasks behaviour, real-Redis load and k6 are NOT RUN; real Google sign-in, Upstash QStash and Redis were used only in the single free-tier run).
 
 ## GitHub Actions verification

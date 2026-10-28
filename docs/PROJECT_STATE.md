@@ -6,8 +6,8 @@ Last updated: 2026-10-23, by Claude Code (B9-7 and its review fixes merged as PR
 ## Phase
 
 Architecture v0.2 frozen (ADR-009 to ADR-018), plus ADR-019 (free-tier platform, amended 2026-10-22). `main` (see git log): B1-B6, B7 and B9-0 to B9-4, B9-6, B9-7 (with review fixes) are in.
-Remote: private `github.com/nevzatius/QueuePilot`. Free-tier cloud resources exist since the first live run (2026-10-22/23): Firebase Spark project, two Render free services, Upstash QStash schedule and Redis. No Google Cloud (billed) resource exists. The local MVP also works end to end on emulators.
-The owner has no billing account, so the target is free tiers only (Firebase Spark, Render free, Upstash QStash + Redis `queuepilot`). Cloud Tasks stays supported behind the queue factory. Owner runbook: `docs/DEPLOYMENT_RUNBOOK.md` ("Free-tier path" first, GCP path after it).
+Remote: public `github.com/nevzatius/QueuePilot`. Free-tier cloud resources exist since the first live run (2026-10-22/23): Firebase Spark project, two Render free services, Upstash QStash schedule and Redis. No Google Cloud (billed) resource exists. The local MVP also works end to end on emulators.
+The project runs without a billing account, so the target is free tiers only (Firebase Spark, Render free, Upstash QStash + Redis `queuepilot`). Cloud Tasks stays supported behind the queue factory. Owner runbook: `docs/DEPLOYMENT_RUNBOOK.md` ("Free-tier path" first, GCP path after it).
 
 ## Milestones
 

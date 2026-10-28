@@ -198,13 +198,17 @@ Cloud Tasks hiç ölçülmedi. "10.000 RPS" gibi bir verim iddia edilmez ve gös
 ## Bilinen sınırlamalar
 
 - **Production'a hazır değildir.** Google Cloud dağıtımı yok; tek bir geçici ücretsiz katman çalıştırması vardır (rakamlar birer çalıştırmadır). Güvenlik sertifikasyonu veya bağımsız denetim yok.
-- Tasarımın varsaydığı Cloud Tasks semantiği (ADR-003/011/017), sahibin bulut spike'ını (C1–C9 kontrolleri, **ÇALIŞTIRILMADI**)
+- Tasarımın varsaydığı Cloud Tasks semantiği (ADR-003/011/017), bakımcının bulut spike'ını (C1–C9 kontrolleri, **ÇALIŞTIRILMADI**)
   çalıştırmasına kadar **doğrulanmamıştır**. Varsayımlar yanlışsa tasarım yanlış duruma değil, fazladan görevlere dönüşür.
 - Redis Lua betikleri ve adaptörleri gerçek Redis'e karşı yalnızca CI'da çalışır; geliştirici Windows makinesinde Redis yoktur.
 - Google ile giriş gerçek Google'a karşı yalnızca bir kez, ücretsiz katman çalıştırmasında Firebase Hosting'den denenmiştir (n=1); diğer tüm testler Auth emülatörünü kullanır.
 - Yük rakamları yereldir ve emülatör tabanlıdır (yukarıya bakın). Bulut ölçeklenebilirliği iddia edilmez.
-- Başarısız isteklerin yönetici tarafından yeniden denenmesi bilerek etkinleştirilmemiştir. Henüz lisans dosyası yoktur; lisans konusu
-  sahibin kararını beklemektedir.
+- Başarısız isteklerin yönetici tarafından yeniden denenmesi bilerek etkinleştirilmemiştir.
+- MIT lisansı altında yayımlanmıştır, bkz. [LICENSE](LICENSE).
+
+## Barındırılan bir hizmet değildir
+
+Ücretsiz katman dağıtımı herkese açık değildir, kayıt kapalıdır ve destek verilmez. `docs/DEMO.md` ve `docs/USE_CASES.md` Türkçe yazılmıştır.
 
 ## Bulut dağıtım durumu
 
@@ -212,8 +216,8 @@ Cloud Tasks hiç ölçülmedi. "10.000 RPS" gibi bir verim iddia edilmez ve gös
 Ücretsiz katmanlarda (Render free, Firebase Spark, Upstash) ilk canlı dağıtım 2026-10-22/23'te bir kez çalıştırılmıştır ve geçicidir; rakamlar birer çalıştırmadır (bkz. [docs/TASKS.md](docs/TASKS.md), "B9-9 live results").
 Altyapı betikleri, API ve worker Dockerfile'ları, korumalı deploy/shutdown sarmalayıcıları, yönetici yetkisi verme betiği ve demo tohum betiği
 yazılmış ve yalnızca çevrimdışı veya emülatörde test edilmiştir ([infra/README.md](infra/README.md), [infra/CLOUD_VERIFICATION.md](infra/CLOUD_VERIFICATION.md));
-durum değiştiren her adım sahibin açık onayını gerektirir ve varsayılan olarak dry-run'dır. Yerel hazırlık kontrolü: `node scripts/preflight.mjs`
-(sahip `--run` eklemedikçe Google Cloud'a bağlanmaz; `--run` yalnızca okur). Adım adım sahip rehberi: [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md). Yerel emülatör demosu ile bulut
+durum değiştiren her adım bakımcının açık onayını gerektirir ve varsayılan olarak dry-run'dır. Yerel hazırlık kontrolü: `node scripts/preflight.mjs`
+(bakımcı `--run` eklemedikçe Google Cloud'a bağlanmaz; `--run` yalnızca okur). Adım adım bakımcı rehberi: [docs/DEPLOYMENT_RUNBOOK.md](docs/DEPLOYMENT_RUNBOOK.md). Yerel emülatör demosu ile bulut
 dağıtımı farklı şeylerdir: bugün gösterilen yalnızca ilkidir; bulut tarafı doğrulanmamıştır (C1-C9, Cloud Run/Tasks davranışı, gerçek Redis yükü ve k6 ÇALIŞTIRILMADI; gerçek Google ile giriş, Upstash QStash ve Redis yalnızca tek bir ücretsiz-katman çalıştırmasında kullanıldı).
 
 ## GitHub Actions doğrulaması

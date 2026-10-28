@@ -128,7 +128,7 @@ Status values: Accepted, Pending verification, Superseded.
   - Scheduler: a QStash schedule ticks the reconciler every 60 minutes, plus a throttled opportunistic reconcile on incoming requests. Liveness after a lost wake-up is bounded by roughly one tick (or the next request), not by seconds.
   - Sandbox quota 300 per day, `openSignup=false`. Redis rate limiting and quotas are unchanged (ADR-009, ADR-018).
   - Free-quota safety: fail closed; `RESOURCE_EXHAUSTED` is classified, not treated as a generic retryable error; QStash retries limited to 2-3; the worker returns `Retry-After` on 409 and 503; the dashboard polls every 30 s; stuck counts use `count()` aggregations.
-- **Evidence** (measured 2026-10-20 in a disposable spike, repo `nevzatius/render-qstash-spike`, commit `402c284`; the spike service is deleted; none of this is a QueuePilot measurement):
+- **Evidence** (measured 2026-10-20 in a disposable spike, private spike, not published, commit `402c284`; the spike service is deleted; none of this is a QueuePilot measurement):
   - QStash publish returns 201. A duplicate deduplication id also returns **201** (not 202) with `"deduplicated":true` in the body, and only one delivery happens (n=1). The adapter must read the `deduplicated` field and treat both as CREATED.
   - Every delivery and every retry counts as a message: the MESSAGES counter went 8 -> 14 for `Upstash-Retries: 5`, which produced 6 deliveries (n=1). The free limit is 1,000 messages per day. **Whether retries count toward the daily limit was not directly verified.**
   - Default retry backoff observed about 12 s, then about 154 s (n=1 run). `Retry-After` is honoured (30 s and 5 s tested, within about 1 s; n=1 each). `Upstash-Retries: 5` is accepted on the free plan.

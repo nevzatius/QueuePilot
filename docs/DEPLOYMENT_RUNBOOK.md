@@ -58,7 +58,7 @@ Fixed names used below: Redis database `queuepilot`; Render services `queuepilot
    Check by reading the project again: all the labels, including the new one, must be there.
 
 **2. Service-account key (the API and worker have no Google identity on Render).**
-1. Project settings > Service accounts > **Generate new private key**. Save the JSON **outside the repo** (for example `D:\QueuePilot-local\`).
+1. Project settings > Service accounts > **Generate new private key**. Save the JSON **outside the repo** (for example `<secrets-dir>`).
 2. You will paste its whole content into the Render field `QP_FIREBASE_SERVICE_ACCOUNT_JSON` in step 4. The apps accept it only from that variable, check it at startup and print a constant message if it is wrong (never its content).
 3. This is a long-lived credential for the Firebase Admin service account (broad project access). Delete the key in the console at shutdown (step 11).
 
@@ -68,12 +68,12 @@ Fixed names used below: Redis database `queuepilot`; Render services `queuepilot
 3. **(observed) Paste every Upstash value WITHOUT quotes.** The Upstash console copies `REDIS_URL`, `QSTASH_URL`, the token and both signing keys with surrounding double quotes. In the live run the first Render start failed with `Invalid API configuration` because of them, and after the first fix one worker variable was still wrong (quotes or a stale value; the cause was not recorded). Remove the quotes from each value before pasting it into Render (both services). Before deploying, put the values in a local env file **outside the repo** and run `node scripts/config-doctor.mjs` on it: it found the quoted values in the live run.
 
 **3a. Check your values before deploying [repo].** Run the configuration doctor before you create the services (and again before every change of a value). It builds the environment each Render service would get (the fixed values of `render.yaml` plus your values) and runs the **same loader the service runs at startup**, locally: no network, nothing is sent anywhere, and it never prints a value (only names, presence, length and whether a value has leading/trailing whitespace).
-1. Put your dashboard values in a text file **outside the repository** (the doctor refuses a file inside it), one `NAME=VALUE` per line, for example `D:queuepilot-secretssecrets.txt`: `GCLOUD_PROJECT`, `QP_WORKER_URL`, `QP_CORS_ORIGINS`, `QSTASH_URL`, `QSTASH_TOKEN`, `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY`, `REDIS_URL`. Exact rules: blank lines and lines starting with `#` are ignored; everything after the first `=` is the value, character for character (no trimming, **no quote stripping**: write `REDIS_URL=rediss://...`, not `REDIS_URL="rediss://..."`); a name twice is an error. Keep the service-account key as its own file, for example `D:queuepilot-secretskey.json` (the doctor minifies it the way the clipboard command in step 4.2 does).
+1. Put your dashboard values in a text file **outside the repository** (the doctor refuses a file inside it), one `NAME=VALUE` per line, for example `<secrets-dir>/secrets.txt`: `GCLOUD_PROJECT`, `QP_WORKER_URL`, `QP_CORS_ORIGINS`, `QSTASH_URL`, `QSTASH_TOKEN`, `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY`, `REDIS_URL`. Exact rules: blank lines and lines starting with `#` are ignored; everything after the first `=` is the value, character for character (no trimming, **no quote stripping**: write `REDIS_URL=rediss://...`, not `REDIS_URL="rediss://..."`); a name twice is an error. Keep the service-account key as its own file, for example `<secrets-dir>/key.json` (the doctor minifies it the way the clipboard command in step 4.2 does).
 2. Run it once per service:
 
 ```powershell
-node scripts/config-doctor.mjs --service api --env-file D:queuepilot-secretssecrets.txt --service-account-file D:queuepilot-secretskey.json
-node scripts/config-doctor.mjs --service worker --env-file D:queuepilot-secretssecrets.txt --service-account-file D:queuepilot-secretskey.json
+node scripts/config-doctor.mjs --service api --env-file <secrets-dir>/secrets.txt --service-account-file <secrets-dir>/key.json
+node scripts/config-doctor.mjs --service worker --env-file <secrets-dir>/secrets.txt --service-account-file <secrets-dir>/key.json
 ```
 
 3. Read the verdict. `PASS` means the loader accepts the configuration (not that the values are right for the real services). `FAIL` lists the variable **names** with a reason code: `missing`, `blank`, `whitespace` (a stray space or newline around the value), `wrong_format`, `not_https`, `not_origin` (a path, query or trailing slash), `not_rediss` (use the `rediss://` TLS URL), `invalid_json` / `project_mismatch` (service-account key), `out_of_range`, `mismatch`, `not_allowed`, plus `wildcard`, `empty_entry`, `too_many`, `duplicate`, `loopback_in_production` for `QP_CORS_ORIGINS`. Fix the value in your file and run again. Exit codes: 0 PASS, 1 FAIL, 2 usage or a malformed env file, 3 refused (a file inside the repository), 5 a file cannot be read.
@@ -85,7 +85,7 @@ node scripts/config-doctor.mjs --service worker --env-file D:queuepilot-secretss
 2. Render asks for every `sync: false` value. Enter them for **both** services (the same value each time): `GCLOUD_PROJECT` = `PROJECT_ID`; `QSTASH_URL`, `QSTASH_TOKEN`, `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY`, `REDIS_URL`; `QP_FIREBASE_SERVICE_ACCOUNT_JSON` (paste the key file content).
    **No Render prompt may be left empty.** An empty `QP_FIREBASE_SERVICE_ACCOUNT_JSON` makes both services refuse to start (`QP_FIREBASE_SERVICE_ACCOUNT_JSON is required on this host`: Render has no Google identity). An empty `QP_CORS_ORIGINS` starts the API but leaves it unusable from the browser (the API logs a `CONFIG_WARNING` at boot). An empty `QSTASH_URL` is read as the global default, but enter the URL beside your token anyway (tokens are regional). Empty `QSTASH_*`, `REDIS_URL`, `GCLOUD_PROJECT` or `QP_WORKER_URL` stop the boot with a constant message.
    Paste the key file as it is. If a service then reports `QP_FIREBASE_SERVICE_ACCOUNT_JSON is invalid`, Render stored the multi-line paste differently from what the file holds: paste a one-line version instead (`Get-Content KEY.json -Raw | ConvertFrom-Json | ConvertTo-Json -Compress | Set-Clipboard`; not run yet, B9-9 records how Render stores it).
-3. Also for both: `QP_WORKER_URL` = `https://queuepilot-worker.onrender.com` (the **expected** worker origin: no path, no trailing slash; corrected in step 5).
+3. Also for both: `QP_WORKER_URL` = `https://<your-worker>.onrender.com` (the **expected** worker origin: no path, no trailing slash; corrected in step 5).
    For the API only: `QP_CORS_ORIGINS` = `https://PROJECT_ID.web.app,https://PROJECT_ID.firebaseapp.com` (the Hosting origins; a request from any other origin gets no CORS headers).
 4. Create. `render.yaml` already fixes `QP_ENV=production`, `QP_QUEUE_ADAPTER=qstash`, `QP_WORKER_AUTH_MODE=qstash`, `TRUST_PROXY_HOPS=3` (API), the free plan and `autoDeployTrigger: off`.
    Nothing redeploys by itself after a code change; use **Manual Deploy**.
@@ -171,7 +171,7 @@ Alternative (not run in the live run): seed with `--open-signup true` (add it to
 ## Pre-flight (local, no cloud access)
 
 ```powershell
-node scripts/preflight.mjs --config D:/QueuePilot-local/cloud.json --project ACTUAL_DEMO_PROJECT --region europe-west1
+node scripts/preflight.mjs --config <secrets-dir>/cloud.json --project ACTUAL_DEMO_PROJECT --region europe-west1
 ```
 
 Reports `PASS` (verified locally), `FAIL` (repository inconsistency), `BLOCKED` (a local tool, artifact or configuration is missing) and `NOT RUN`
@@ -184,7 +184,7 @@ A green preflight does not mean any cloud resource exists or that C1–C9 passed
 the pinned `redis-url` version **metadata** (never the payload), `qp-process` and `qp-reconcile` state, the Run images and their invoker IAM.
 
 ```powershell
-node scripts/preflight.mjs --config D:/QueuePilot-local/cloud.json --project ACTUAL_DEMO_PROJECT --region europe-west1 --run --approve-project ACTUAL_DEMO_PROJECT
+node scripts/preflight.mjs --config <secrets-dir>/cloud.json --project ACTUAL_DEMO_PROJECT --region europe-west1 --run --approve-project ACTUAL_DEMO_PROJECT
 ```
 
 Statuses: `PASS` matches the plan; `FAIL` contradicts it or a safety rule (other Firestore region, running queue/job, public worker, other image); `ABSENT` not created yet
@@ -201,20 +201,20 @@ confirm them in the console. This mode has only been tested against mocked respo
    never persist or print it. No service-account keys are created.
 4. Review organisation policies (public API access, service-account impersonation) and inherited IAM.
 5. Region is fixed to `europe-west1` (ADR-007); the scripts reject any other region.
-6. Copy `infra/config.example.json` **outside the repository** (for example `D:/QueuePilot-local/cloud.json`) and set
+6. Copy `infra/config.example.json` **outside the repository** (for example `<secrets-dir>/cloud.json`) and set
    `projectId`, `projectNumber`, `redisSecretVersion` (a numeric pinned version) and, later, the two image digests. The config accepts
    only these keys; credentials and fault flags are rejected.
 7. Print the plan; this uses no credentials or network **[repo]**:
 
 ```powershell
-node infra/apply.mjs --config D:/QueuePilot-local/cloud.json
+node infra/apply.mjs --config <secrets-dir>/cloud.json
 ```
 
 Services enabled by the `bootstrap` stage: Resource Manager, Run, Tasks, Scheduler, Firestore, Firebase Rules, Secret Manager, IAM,
 IAM Credentials, Artifact Registry.
 
 ```powershell
-node infra/apply.mjs --config D:/QueuePilot-local/cloud.json --stage bootstrap --apply --approve-project=ACTUAL_DEMO_PROJECT
+node infra/apply.mjs --config <secrets-dir>/cloud.json --stage bootstrap --apply --approve-project=ACTUAL_DEMO_PROJECT
 ```
 
 Stages run in this order, one at a time, each reviewed: `bootstrap`, (owner secret/image gate), `data`, `queue`, `access`, `deploy`, `iam`, `scheduler`.
@@ -226,8 +226,8 @@ the region and the digest you reviewed; it then delegates to `infra/apply.mjs`, 
 location consent, paused queue/job, pinned images) stay in force. The wrapper never resumes a queue or job.
 
 ```powershell
-node scripts/deploy.mjs --config D:/QueuePilot-local/cloud.json --project ACTUAL_DEMO_PROJECT --region europe-west1 --stage bootstrap
-node scripts/deploy.mjs --config D:/QueuePilot-local/cloud.json --project ACTUAL_DEMO_PROJECT --region europe-west1 --stage bootstrap `
+node scripts/deploy.mjs --config <secrets-dir>/cloud.json --project ACTUAL_DEMO_PROJECT --region europe-west1 --stage bootstrap
+node scripts/deploy.mjs --config <secrets-dir>/cloud.json --project ACTUAL_DEMO_PROJECT --region europe-west1 --stage bootstrap `
   --apply --approve-project ACTUAL_DEMO_PROJECT --approve-region europe-west1 --approve-plan DIGEST_FROM_THE_PLAN
 ```
 
@@ -255,7 +255,7 @@ The provisioning identity (you) needs the permissions listed under "owner provis
 - **Irreversible decision:** region `europe-west1` for the default Native database. Creation requires **both** flags **[repo]**:
 
 ```powershell
-node infra/apply.mjs --config D:/QueuePilot-local/cloud.json --stage data --apply --approve-project=ACTUAL_DEMO_PROJECT --approve-firestore-location=europe-west1
+node infra/apply.mjs --config <secrets-dir>/cloud.json --stage data --apply --approve-project=ACTUAL_DEMO_PROJECT --approve-firestore-location=europe-west1
 ```
 
 - Creates the database with delete protection if absent, installs deny-all rules, three composite indexes (`infra/firestore.indexes.json`),
@@ -272,13 +272,13 @@ Queue `qp-process` (stage `queue`) **[repo]**: `maxDispatchesPerSecond=20`, `max
 (there is a brief create-to-pause window, so do not enqueue concurrently). OIDC identity and `dispatchDeadline=30s` are set per task by the API, not on the queue.
 
 ```powershell
-node infra/apply.mjs --config D:/QueuePilot-local/cloud.json --stage queue --apply --approve-project=ACTUAL_DEMO_PROJECT
+node infra/apply.mjs --config <secrets-dir>/cloud.json --stage queue --apply --approve-project=ACTUAL_DEMO_PROJECT
 ```
 
 The queue (and later the Scheduler job) is created and kept **paused**. No script in this repository resumes either; resuming is the owner's explicit action in section I.
 
 C1–C9 use isolated `qp-spike-*` resources and never touch `qp-process`. Follow [infra/CLOUD_VERIFICATION.md](../infra/CLOUD_VERIFICATION.md) exactly:
-build the probe image from `scripts/spike/Dockerfile`, print `node scripts/spike/setup.mjs --config D:/QueuePilot-local/spike.json`, apply stages
+build the probe image from `scripts/spike/Dockerfile`, print `node scripts/spike/setup.mjs --config <secrets-dir>/spike.json`, apply stages
 `identities, queues, access, deploy, iam, scheduler` one at a time, then run `node scripts/spike/probe.mjs ...` per check. Volume is bounded
 (at most 20 unique tasks, at most 60 Redis PINGs). Record results in a new file shaped like `infra/cloud-results.not-run.json`, with PASS / FAIL / INCONCLUSIVE / NOT RUN.
 
@@ -300,7 +300,7 @@ The design is built so wrong assumptions cost extra tasks, not wrong state (ADR-
 
 Every row runs in `ACTUAL_DEMO_PROJECT`, region `europe-west1`, on isolated `qp-spike-*` resources created by `scripts/spike/setup.mjs` (stages `identities, queues,
 access, deploy, iam, scheduler`). It never touches `qp-process`, `qp-api`, `qp-worker` or their identities. Commands are `node scripts/spike/probe.mjs --config
-D:/QueuePilot-local/spike.json ... --run --approve-project=ACTUAL_DEMO_PROJECT` unless stated; exact arguments are in [infra/CLOUD_VERIFICATION.md](../infra/CLOUD_VERIFICATION.md).
+<secrets-dir>/spike.json ... --run --approve-project=ACTUAL_DEMO_PROJECT` unless stated; exact arguments are in [infra/CLOUD_VERIFICATION.md](../infra/CLOUD_VERIFICATION.md).
 Provisioning needs the owner provisioner permissions (infra/README.md); probes impersonate `qp-spike-reader` / `qp-spike-no-get` for 600 s through IAM Credentials.
 Cost is a handful of Cloud Tasks operations, Cloud Run requests at 0–1 instance and at most 60 Redis PINGs; none of the steps is irreversible except that deleted queue
 names may not be reusable for a while (reuse paused queues). Record each result in a copy of `infra/cloud-results.not-run.json`.
@@ -357,9 +357,9 @@ docker inspect --format "{{index .RepoDigests 0}}" europe-west1-docker.pkg.dev/A
 2. Deploy, worker first then API, with explicit service identities **[repo]**:
 
 ```powershell
-node infra/apply.mjs --config D:/QueuePilot-local/cloud.json --stage access --apply --approve-project=ACTUAL_DEMO_PROJECT
-node infra/apply.mjs --config D:/QueuePilot-local/cloud.json --stage deploy --apply --approve-project=ACTUAL_DEMO_PROJECT
-node infra/apply.mjs --config D:/QueuePilot-local/cloud.json --stage iam --apply --approve-project=ACTUAL_DEMO_PROJECT
+node infra/apply.mjs --config <secrets-dir>/cloud.json --stage access --apply --approve-project=ACTUAL_DEMO_PROJECT
+node infra/apply.mjs --config <secrets-dir>/cloud.json --stage deploy --apply --approve-project=ACTUAL_DEMO_PROJECT
+node infra/apply.mjs --config <secrets-dir>/cloud.json --stage iam --apply --approve-project=ACTUAL_DEMO_PROJECT
 ```
 
 3. Configured limits: API 0–5 instances, concurrency 80, timeout 15 s; worker 0–3 instances, concurrency 10, timeout 60 s; 1 CPU / 512 MiB, CPU throttling, scale to zero.
@@ -416,8 +416,8 @@ Order matters: stop new work, then inspect, then remove. Pause does **not** canc
    pauses `qp-reconcile` then `qp-process` through the existing `ensurePaused` code and requires a read-back of `PAUSED`. It never deletes or resumes anything:
 
 ```powershell
-node scripts/shutdown.mjs --config D:/QueuePilot-local/cloud.json --project ACTUAL_DEMO_PROJECT --region europe-west1
-node scripts/shutdown.mjs --config D:/QueuePilot-local/cloud.json --project ACTUAL_DEMO_PROJECT --region europe-west1 `
+node scripts/shutdown.mjs --config <secrets-dir>/cloud.json --project ACTUAL_DEMO_PROJECT --region europe-west1
+node scripts/shutdown.mjs --config <secrets-dir>/cloud.json --project ACTUAL_DEMO_PROJECT --region europe-west1 `
   --apply --approve-project ACTUAL_DEMO_PROJECT --approve-region europe-west1
 ```
 

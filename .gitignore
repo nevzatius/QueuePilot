@@ -35,3 +35,6 @@ Thumbs.db
 # Local agent state (shared agents in .claude/agents stay tracked)
 .claude/settings.local.json
 .claude/worktrees/
+
+# Local project notes (not for the public repo)
+PROJECT_CONTEXT.md

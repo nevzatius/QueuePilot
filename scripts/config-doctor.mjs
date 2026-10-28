@@ -9,7 +9,7 @@ import { parseBlueprint } from './lib/render-yaml.mjs';
 // a service-account key file), then runs the SAME loader the service runs at startup (packages/core loadConfig) and
 // reports PASS, or FAIL with the NAMES of the failing variables and a reason code. No network, no cloud call.
 //
-//   node scripts/config-doctor.mjs --service api|worker --env-file D:\queuepilot-secrets\secrets.txt [--service-account-file D:\queuepilot-secrets\key.json]
+//   node scripts/config-doctor.mjs --service api|worker --env-file <secrets-dir>/secrets.txt [--service-account-file <secrets-dir>/key.json]
 //
 // Output: variable names, presence, length and a whitespace flag; never a value, never a line of the env file.
 // Exit: 0 PASS, 1 FAIL (the configuration is rejected), 2 usage or a malformed env file, 3 refused (a secrets file inside
@@ -110,7 +110,7 @@ export async function doctorMain(argv, io, deps = {}) {
   const repoRoot = deps.root ?? root;
   const files = [['env file', values['env-file']], ...(values['service-account-file'] ? [['service-account file', values['service-account-file']]] : [])];
   for (const [label, path] of files) {
-    if (isInsideRepository(path, repoRoot)) throw new ScriptError(EXIT.REFUSED, `Refusing: the ${label} is inside the git repository. Keep secrets outside it (for example D:\\queuepilot-secrets).`);
+    if (isInsideRepository(path, repoRoot)) throw new ScriptError(EXIT.REFUSED, `Refusing: the ${label} is inside the git repository. Keep secrets outside it (for example <secrets-dir>).`);
   }
   const text = (label, path) => { try { return read(path); } catch { throw new ScriptError(EXIT.IO, `Cannot read the ${label}`); } };
   const built = buildEnvironment({
